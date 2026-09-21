@@ -1,0 +1,25 @@
+[project]
+name = "fusion-plugin-break-marks"
+version = "0.1.0"
+description = "Autodesk Fusion plugin to create break marks for bending sheetgoods"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = []
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ty.environment]
+python-version = "3.13"
+
+[dependency-groups]
+dev = [
+    "adsk>=2.0.12157",
+    "pytest>=9.1.0",
+    "ruff>=0.15.17",
+    "ty>=0.0.49",
+]
