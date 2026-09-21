@@ -1,3 +1,5 @@
+from collections.abc import Callable
+from math import isfinite
 from typing import Any, cast
 
 import adsk.core
@@ -29,7 +31,7 @@ def validate_parameter(name: str, parameter: object) -> float:
     unit = getattr(dynamic_parameter, "unit", None)
     if unit is None:
         unit = getattr(dynamic_parameter, "unitType", None)
-    if value <= 0 or (unit is not None and unit not in _LENGTH_UNITS):
+    if not isfinite(value) or value <= 0 or (unit is not None and unit not in _LENGTH_UNITS):
         raise BendMarksError(f"{name} must be a positive length")
     return value
 
@@ -41,10 +43,14 @@ def _collection_items(collection: object) -> tuple[object, ...]:
     return tuple(dynamic_collection)
 
 
-def _owned_parents(attributes: object) -> tuple[object, ...]:
+def _owned_parents(attributes: object, expected_type: str) -> tuple[object, ...]:
     parents = (cast(Any, attribute).parent for attribute in _collection_items(attributes))
     return tuple(
-        parent for parent in parents if parent is not None and getattr(parent, "isValid", True)
+        parent
+        for parent in parents
+        if parent is not None
+        and getattr(parent, "isValid", True)
+        and getattr(parent, "objectType", None) == expected_type
     )
 
 
@@ -123,8 +129,12 @@ class FusionBackend:
 
     def find_existing_marks(self) -> ExistingMarks:
         product = cast(Any, self.product)
-        sketches = _owned_parents(product.findAttributes(ATTRIBUTE_GROUP, SKETCH_ATTRIBUTE))
-        cuts = _owned_parents(product.findAttributes(ATTRIBUTE_GROUP, CUT_ATTRIBUTE))
+        sketch_type = adsk.fusion.Sketch.classType() or "adsk::fusion::Sketch"
+        cut_type = adsk.fusion.ExtrudeFeature.classType() or "adsk::fusion::ExtrudeFeature"
+        sketches = _owned_parents(
+            product.findAttributes(ATTRIBUTE_GROUP, SKETCH_ATTRIBUTE), sketch_type
+        )
+        cuts = _owned_parents(product.findAttributes(ATTRIBUTE_GROUP, CUT_ATTRIBUTE), cut_type)
         if len(sketches) > 1:
             raise BendMarksError("Found multiple owned bend mark sketches")
         if len(cuts) > 1:
@@ -142,10 +152,19 @@ class FusionBackend:
         }
 
     @staticmethod
-    def _require_bend_entity(entity: object, bend_index: int, operation: str) -> Any:
+    def _bend_operation(bend_index: int, operation: str, callback: Callable[[], object]) -> Any:
+        try:
+            entity = callback()
+        except Exception as error:
+            raise BendMarksError(f"Bend {bend_index}: {operation}") from error
         if not entity:
             raise BendMarksError(f"Bend {bend_index}: {operation}")
         return cast(Any, entity)
+
+    @staticmethod
+    def _set_dimension_expression(dimension: Any, expression: str) -> bool:
+        dimension.parameter.expression = expression
+        return True
 
     def _add_rectangle(
         self,
@@ -159,37 +178,50 @@ class FusionBackend:
         constraints = sketch.geometricConstraints
         dimensions = sketch.sketchDimensions
         corners = tuple(_point3d(corner) for corner in rectangle.corners)
-        rectangle_lines = tuple(
-            self._require_bend_entity(
-                lines.addByTwoPoints(corners[index], corners[(index + 1) % 4]),
-                bend_index,
-                "could not create rectangle edge",
-            )
-            for index in range(4)
+        first_line = self._bend_operation(
+            bend_index,
+            "could not create rectangle edge",
+            lambda: lines.addByTwoPoints(corners[0], corners[1]),
         )
+        second_line = self._bend_operation(
+            bend_index,
+            "could not create rectangle edge",
+            lambda: lines.addByTwoPoints(first_line.endSketchPoint, corners[2]),
+        )
+        third_line = self._bend_operation(
+            bend_index,
+            "could not create rectangle edge",
+            lambda: lines.addByTwoPoints(second_line.endSketchPoint, corners[3]),
+        )
+        fourth_line = self._bend_operation(
+            bend_index,
+            "could not create rectangle edge",
+            lambda: lines.addByTwoPoints(third_line.endSketchPoint, first_line.startSketchPoint),
+        )
+        rectangle_lines = (first_line, second_line, third_line, fourth_line)
 
         for line in (rectangle_lines[1], rectangle_lines[3]):
-            self._require_bend_entity(
-                constraints.addParallel(line, projected_line),
+            self._bend_operation(
                 bend_index,
                 "could not add parallel constraint",
+                lambda line=line: constraints.addParallel(line, projected_line),
             )
         for line in (rectangle_lines[0], rectangle_lines[2]):
-            self._require_bend_entity(
-                constraints.addPerpendicular(line, projected_line),
+            self._bend_operation(
                 bend_index,
                 "could not add perpendicular constraint",
+                lambda line=line: constraints.addPerpendicular(line, projected_line),
             )
 
-        outer_line = self._require_bend_entity(
-            lines.addByTwoPoints(_point3d(rectangle.outer_midpoint), projected_endpoint),
+        outer_line = self._bend_operation(
             bend_index,
             "could not create outer construction line",
+            lambda: lines.addByTwoPoints(_point3d(rectangle.outer_midpoint), projected_endpoint),
         )
-        inner_line = self._require_bend_entity(
-            lines.addByTwoPoints(projected_endpoint, _point3d(rectangle.inner_midpoint)),
+        inner_line = self._bend_operation(
             bend_index,
             "could not create inner construction line",
+            lambda: lines.addByTwoPoints(projected_endpoint, _point3d(rectangle.inner_midpoint)),
         )
         outer_line.isConstruction = True
         inner_line.isConstruction = True
@@ -198,15 +230,17 @@ class FusionBackend:
             (outer_line, outer_line.startSketchPoint, rectangle_lines[0]),
             (inner_line, inner_line.endSketchPoint, rectangle_lines[2]),
         ):
-            self._require_bend_entity(
-                constraints.addMidPoint(midpoint, edge),
+            self._bend_operation(
                 bend_index,
                 "could not add midpoint constraint",
+                lambda midpoint=midpoint, edge=edge: constraints.addMidPoint(midpoint, edge),
             )
-            self._require_bend_entity(
-                constraints.addCollinear(construction, projected_line),
+            self._bend_operation(
                 bend_index,
                 "could not add collinear constraint",
+                lambda construction=construction: constraints.addCollinear(
+                    construction, projected_line
+                ),
             )
 
         orientation = adsk.fusion.DimensionOrientations.AlignedDimensionOrientation
@@ -216,25 +250,31 @@ class FusionBackend:
             (rectangle_lines[0], "bend_mark_width", rectangle.corners[0]),
         )
         for line, expression, text_position in dimension_specs:
-            dimension = self._require_bend_entity(
-                dimensions.addDistanceDimension(
+            dimension = self._bend_operation(
+                bend_index,
+                f"could not add {expression} dimension",
+                lambda line=line, text_position=text_position: dimensions.addDistanceDimension(
                     line.startSketchPoint,
                     line.endSketchPoint,
                     orientation,
                     _point3d(text_position),
                     True,
                 ),
-                bend_index,
-                f"could not add {expression} dimension",
             )
-            dimension.parameter.expression = expression
+            self._bend_operation(
+                bend_index,
+                f"could not set {expression} expression",
+                lambda dimension=dimension, expression=expression: self._set_dimension_expression(
+                    dimension, expression
+                ),
+            )
 
     def _create_sketch(self) -> object:
         sketch: Any = None
         try:
             root_component = cast(Any, self.root_component)
             flat_pattern = cast(Any, self.flat_pattern)
-            sketch = root_component.sketches.add(flat_pattern.topFace)
+            sketch = root_component.sketches.addWithoutEdges(flat_pattern.topFace)
             if sketch is None:
                 raise BendMarksError("Could not create bend mark sketch")
             sketch.name = "Bend Marks"
@@ -329,9 +369,14 @@ class FusionBackend:
                 raise BendMarksError(f"Could not delete existing bend mark {description}")
 
     def delete_parameters(self, parameters: tuple[object, ...]) -> None:
-        failed = False
-        for parameter in reversed(parameters):
-            if not cast(Any, parameter).deleteMe():
-                failed = True
-        if failed:
-            raise BendMarksError("Could not delete bend mark parameter")
+        failures: list[str] = []
+        for index, parameter in reversed(tuple(enumerate(parameters, start=1))):
+            dynamic_parameter = cast(Any, parameter)
+            name = getattr(dynamic_parameter, "name", f"parameter {index}")
+            try:
+                if not dynamic_parameter.deleteMe():
+                    failures.append(f"{name}: delete returned false")
+            except Exception as error:
+                failures.append(f"{name}: {error}")
+        if failures:
+            raise BendMarksError(f"Could not delete bend mark parameters: {'; '.join(failures)}")

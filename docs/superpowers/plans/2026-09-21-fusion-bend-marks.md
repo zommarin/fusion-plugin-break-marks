@@ -472,7 +472,7 @@ PARAMETERS = (
 )
 ```
 
-Implement `classify_bend_geometry` by comparing `geometry.objectType` with `adsk.core.Line3D.classType()` when available and the stable runtime string `"adsk::core::Line3D"` otherwise. Implement `validate_parameter` using `parameter.value` in Fusion internal centimeters and reject values `<= 0`; use `parameter.unit`/`unitType` when available to reject non-length parameters with the same message.
+Implement `classify_bend_geometry` by comparing `geometry.objectType` with `adsk.core.Line3D.classType()` when available and the stable runtime string `"adsk::core::Line3D"` otherwise. Implement `validate_parameter` using `parameter.value` in Fusion internal centimeters and reject non-finite values and values `<= 0`; use `parameter.unit`/`unitType` when available to reject non-length parameters with the same message.
 
 In `FusionBackend.prepare`:
 
@@ -485,11 +485,11 @@ In `FusionBackend.prepare`:
 
 In `ensure_parameters`, use `product.userParameters.itemByName`; validate existing values and create missing values with `adsk.core.ValueInput.createByString(default_expression)`, unit `"mm"`, and the listed comment. Return only newly created parameter objects. If creation or validation fails after one or more parameters were added, delete those newly added parameters in reverse order before raising; the service cannot clean objects from a call that never returned.
 
-In `find_existing_marks`, call `product.findAttributes(ATTRIBUTE_GROUP, SKETCH_ATTRIBUTE)` and the equivalent cut query. Resolve each attribute's `parent` and return at most one valid owned sketch and cut; raise `BendMarksError` if duplicate owned sketches or cuts exist rather than deleting ambiguous data.
+In `find_existing_marks`, call `product.findAttributes(ATTRIBUTE_GROUP, SKETCH_ATTRIBUTE)` and the equivalent cut query. Resolve each attribute's `parent`, require exact `Sketch` and `ExtrudeFeature` runtime object types respectively, and return at most one valid owned sketch and cut; raise `BendMarksError` if duplicate owned sketches or cuts exist rather than deleting ambiguous data.
 
 - [ ] **Step 4: Implement projected constrained rectangles**
 
-Implement a private `_create_sketch()` that adds a sketch to `rootComponent.sketches` on `flatPattern.topFace`, names it `Bend Marks`, and immediately tags it with `sketch.attributes.add(ATTRIBUTE_GROUP, SKETCH_ATTRIBUTE, "1")`.
+Implement a private `_create_sketch()` that calls dynamic `rootComponent.sketches.addWithoutEdges(flatPattern.topFace)` so sheet edges are not auto-projected, names the sketch `Bend Marks`, and immediately tags it with `sketch.attributes.add(ATTRIBUTE_GROUP, SKETCH_ATTRIBUTE, "1")`.
 
 For each supported edge:
 
@@ -497,7 +497,7 @@ For each supported edge:
 2. Set projected line `isConstruction = True`.
 3. Read projected endpoint coordinates from `startSketchPoint.geometry` and `endSketchPoint.geometry`.
 4. Call `endpoint_rectangles` using current parameter values in internal centimeters.
-5. Build each rectangle's four lines with `sketch.sketchCurves.sketchLines.addByTwoPoints`.
+5. Build each rectangle's four lines with `sketch.sketchCurves.sketchLines.addByTwoPoints`, chaining each new side from the prior side's `endSketchPoint` and closing the fourth side against the first side's `startSketchPoint`.
 6. Add parallel/perpendicular constraints so long sides stay parallel to the projected line and end edges stay perpendicular.
 7. Add two construction lines: outer midpoint to projected endpoint and projected endpoint to inner midpoint. Use projected endpoint `SketchPoint` objects directly so coincidence is structural; set both lines construction.
 8. Add `addMidPoint` constraints between each construction-line free endpoint and its corresponding rectangle end edge, and `addCollinear` constraints between each construction line and projected bend line.
@@ -509,7 +509,7 @@ Wrap `_create_sketch` internals in `try/except`; if any entity creation fails, c
 
 - [ ] **Step 5: Implement profile cut and transactional methods**
 
-After all rectangles exist, collect every `sketch.profiles.item(index)` into `adsk.core.ObjectCollection`. Require at least one profile. Create one extrusion from `rootComponent.features.extrudeFeatures` using:
+After all rectangles exist in the edge-free sketch, collect every generated rectangle profile from `sketch.profiles.item(index)` into `adsk.core.ObjectCollection`. Require at least one profile. Create one extrusion from `rootComponent.features.extrudeFeatures` using:
 
 ```python
 extrude_input = extrudes.createInput(profiles, adsk.fusion.FeatureOperations.CutFeatureOperation)
@@ -526,7 +526,7 @@ Implement remaining backend methods exactly:
 
 - `set_cut_suppressed`: assign `cut.isSuppressed` and verify resulting value.
 - `delete_existing_marks`: delete old cut first, then old sketch; no-op for missing members.
-- `delete_parameters`: call `deleteMe()` in reverse creation order.
+- `delete_parameters`: call `deleteMe()` for every parameter in reverse creation order, collecting false returns and raised exceptions, then raise one contextual `BendMarksError` after all attempts if any failed.
 
 Raise `BendMarksError` when a required delete or suppression operation reports failure.
 

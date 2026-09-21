@@ -119,6 +119,12 @@ def test_non_length_parameter_is_rejected() -> None:
         validate_parameter("bend_mark_width", FakeParameter(1, "deg"))
 
 
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_parameter_must_be_finite(value: float) -> None:
+    with pytest.raises(BendMarksError, match="bend_mark_width must be a positive length"):
+        validate_parameter("bend_mark_width", FakeParameter(value))
+
+
 def test_prepare_rejects_non_flat_pattern_product() -> None:
     backend = make_backend(SimpleNamespace(objectType="adsk::fusion::Design"))
 
@@ -231,8 +237,8 @@ def test_null_parameter_creation_deletes_prior_parameters(
 
 
 def test_duplicate_owned_sketches_are_rejected() -> None:
-    first = SimpleNamespace(isValid=True)
-    second = SimpleNamespace(isValid=True)
+    first = SimpleNamespace(isValid=True, objectType="adsk::fusion::Sketch")
+    second = SimpleNamespace(isValid=True, objectType="adsk::fusion::Sketch")
     product = FakeProduct(
         [FakeEdge(FakeLine3D())],
         attributes={
@@ -246,6 +252,22 @@ def test_duplicate_owned_sketches_are_rejected() -> None:
         backend.find_existing_marks()
 
 
+def test_ownership_ignores_attribute_parents_of_wrong_type() -> None:
+    sketch = SimpleNamespace(isValid=True, objectType="adsk::fusion::Sketch")
+    cut = SimpleNamespace(isValid=True, objectType="adsk::fusion::ExtrudeFeature")
+    product = FakeProduct(
+        [FakeEdge(FakeLine3D())],
+        attributes={
+            "generated-sketch": [FakeAttribute(cut)],
+            "generated-cut": [FakeAttribute(sketch)],
+        },
+    )
+    backend = make_backend(product)
+    backend.prepare()
+
+    assert backend.find_existing_marks() == ExistingMarks()
+
+
 @dataclass
 class FakeSketchPoint:
     geometry: object
@@ -257,6 +279,11 @@ class FakeSketchLine:
     endSketchPoint: FakeSketchPoint
     objectType: str = "adsk::fusion::SketchLine"
     isConstruction: bool = False
+
+
+@dataclass(frozen=True)
+class FakeProfile:
+    lines: tuple[FakeSketchLine, ...]
 
 
 class FakeSketchLines:
@@ -327,7 +354,13 @@ class FakeAttributes:
 
 
 class FakeSketch:
-    def __init__(self, log: list[str], projected_items: Sequence[object] | None = None) -> None:
+    def __init__(
+        self,
+        log: list[str],
+        projected_items: Sequence[object] | None = None,
+        *,
+        profiles_enabled: bool = True,
+    ) -> None:
         self.log = log
         self.name = ""
         self.attributes = FakeAttributes()
@@ -344,8 +377,26 @@ class FakeSketch:
         self.sketchCurves = SimpleNamespace(sketchLines=FakeSketchLines())
         self.geometricConstraints = FakeConstraints()
         self.sketchDimensions = FakeDimensions()
-        self.profiles = FakeCollection([object(), object()])
+        self.added_without_edges = False
+        self.profiles_enabled = profiles_enabled
         self.deleted = False
+
+    @property
+    def profiles(self) -> FakeCollection:
+        if not self.profiles_enabled:
+            return FakeCollection([])
+        rectangle_lines = tuple(
+            line for line in self.sketchCurves.sketchLines.created if not line.isConstruction
+        )
+        profiles: list[FakeProfile] = []
+        for offset in range(0, len(rectangle_lines), 4):
+            sides = rectangle_lines[offset : offset + 4]
+            if len(sides) == 4 and all(
+                sides[index].endSketchPoint is sides[(index + 1) % 4].startSketchPoint
+                for index in range(4)
+            ):
+                profiles.append(FakeProfile(sides))
+        return FakeCollection(profiles)
 
     def project(self, _edge: object) -> FakeCollection:
         return FakeCollection(self.projected_items)
@@ -361,8 +412,12 @@ class FakeSketches:
         self.sketch = sketch
         self.faces: list[object] = []
 
-    def add(self, face: object) -> FakeSketch:
+    def add(self, _face: object) -> FakeSketch:
+        raise AssertionError("Sketches.add would auto-project face edges")
+
+    def addWithoutEdges(self, face: object) -> FakeSketch:
         self.faces.append(face)
+        self.sketch.added_without_edges = True
         return self.sketch
 
 
@@ -425,6 +480,7 @@ def build_ready_backend(
     projected_items: Sequence[object] | None = None,
     all_extent_result: bool = True,
     fail_cut_attribute: bool = False,
+    profiles_enabled: bool = True,
 ) -> tuple[FusionBackend, FakeSketch, FakeExtrudes, list[str]]:
     monkeypatch.setattr(
         "BendMarks.fusion_adapter.adsk.core.Point3D.create",
@@ -434,7 +490,7 @@ def build_ready_backend(
         "BendMarks.fusion_adapter.adsk.core.ObjectCollection.create", FakeObjectCollection
     )
     log: list[str] = []
-    sketch = FakeSketch(log, projected_items)
+    sketch = FakeSketch(log, projected_items, profiles_enabled=profiles_enabled)
     extrudes = FakeExtrudes(
         log,
         all_extent_result=all_extent_result,
@@ -468,10 +524,17 @@ def test_build_creates_constrained_rectangles_and_committed_cut(
     assert artifacts.sketch is sketch
     assert artifacts.cut is extrudes.cut
     assert sketch.name == "Bend Marks"
+    assert sketch.added_without_edges
     assert sketch.attributes.added == [("fusion-plugin-bend-marks", "generated-sketch", "1")]
     assert isinstance(sketch.projected_items[0], FakeSketchLine)
     assert sketch.projected_items[0].isConstruction
     assert len(sketch.sketchCurves.sketchLines.created) == 12
+    for offset in (0, 6):
+        sides = sketch.sketchCurves.sketchLines.created[offset : offset + 4]
+        assert sides[0].endSketchPoint is sides[1].startSketchPoint
+        assert sides[1].endSketchPoint is sides[2].startSketchPoint
+        assert sides[2].endSketchPoint is sides[3].startSketchPoint
+        assert sides[3].endSketchPoint is sides[0].startSketchPoint
     assert [call[0] for call in sketch.geometricConstraints.calls] == [
         "parallel",
         "parallel",
@@ -491,7 +554,10 @@ def test_build_creates_constrained_rectangles_and_committed_cut(
     assert extrudes.cut.attributes.added == [("fusion-plugin-bend-marks", "generated-cut", "1")]
     assert extrudes.create_arguments is not None
     assert isinstance(extrudes.create_arguments[0], FakeObjectCollection)
-    assert len(extrudes.create_arguments[0].items) == 2
+    profiles = extrudes.create_arguments[0].items
+    assert len(profiles) == 2
+    assert all(isinstance(profile, FakeProfile) for profile in profiles)
+    assert all(len(profile.lines) == 4 for profile in profiles if isinstance(profile, FakeProfile))
 
 
 def test_projection_failure_deletes_partial_sketch(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -504,6 +570,56 @@ def test_projection_failure_deletes_partial_sketch(monkeypatch: pytest.MonkeyPat
     assert log == ["delete sketch"]
 
 
+@pytest.mark.parametrize(
+    ("failure", "operation"),
+    [
+        ("line", "could not create rectangle edge"),
+        ("constraint", "could not add parallel constraint"),
+        ("dimension", "could not add bend_mark_overhang dimension"),
+        ("expression", "could not set bend_mark_overhang expression"),
+    ],
+)
+def test_sketch_operation_exceptions_include_bend_context_and_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+    operation: str,
+) -> None:
+    backend, sketch, _, log = build_ready_backend(monkeypatch)
+
+    def fail(*_arguments: object) -> object:
+        raise RuntimeError("Fusion operation failed")
+
+    if failure == "line":
+        monkeypatch.setattr(sketch.sketchCurves.sketchLines, "addByTwoPoints", fail)
+    elif failure == "constraint":
+        monkeypatch.setattr(sketch.geometricConstraints, "addParallel", fail)
+    elif failure == "dimension":
+        monkeypatch.setattr(sketch.sketchDimensions, "addDistanceDimension", fail)
+    else:
+
+        class FailingParameter:
+            @property
+            def expression(self) -> str:
+                return ""
+
+            @expression.setter
+            def expression(self, _value: str) -> None:
+                raise RuntimeError("Fusion operation failed")
+
+        monkeypatch.setattr(
+            sketch.sketchDimensions,
+            "addDistanceDimension",
+            lambda *_arguments: SimpleNamespace(parameter=FailingParameter()),
+        )
+
+    with pytest.raises(BendMarksError, match=f"Bend 1: {operation}") as raised:
+        backend.build()
+
+    assert isinstance(raised.value.__cause__, RuntimeError)
+    assert sketch.deleted
+    assert log == ["delete sketch"]
+
+
 def test_through_all_failure_deletes_sketch(monkeypatch: pytest.MonkeyPatch) -> None:
     backend, sketch, extrudes, log = build_ready_backend(monkeypatch, all_extent_result=False)
 
@@ -511,6 +627,18 @@ def test_through_all_failure_deletes_sketch(monkeypatch: pytest.MonkeyPatch) -> 
         backend.build()
 
     assert not extrudes.cut.deleted
+    assert sketch.deleted
+    assert log == ["delete sketch"]
+
+
+def test_empty_generated_profile_collection_deletes_sketch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend, sketch, _, log = build_ready_backend(monkeypatch, profiles_enabled=False)
+
+    with pytest.raises(BendMarksError, match="The bend mark sketch has no profiles"):
+        backend.build()
+
     assert sketch.deleted
     assert log == ["delete sketch"]
 
@@ -587,3 +715,32 @@ def test_parameter_delete_failure_still_attempts_all_parameters() -> None:
         backend.delete_parameters(parameters)
 
     assert log == ["second", "first"]
+
+
+def test_parameter_delete_exceptions_are_collected_after_all_attempts() -> None:
+    log: list[str] = []
+
+    class Parameter:
+        def __init__(self, name: str, result: bool | Exception) -> None:
+            self.name = name
+            self.result = result
+
+        def deleteMe(self) -> bool:
+            log.append(self.name)
+            if isinstance(self.result, Exception):
+                raise self.result
+            return self.result
+
+    backend = make_backend(object())
+    parameters = (
+        Parameter("first", True),
+        Parameter("second", RuntimeError("delete exploded")),
+        Parameter("third", False),
+    )
+
+    with pytest.raises(BendMarksError, match="Could not delete bend mark parameters") as raised:
+        backend.delete_parameters(parameters)
+
+    assert log == ["third", "second", "first"]
+    assert "third: delete returned false" in str(raised.value)
+    assert "second: delete exploded" in str(raised.value)
