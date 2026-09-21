@@ -13,8 +13,12 @@ from BendMarks.service import (
 @dataclass
 class FakeBackend:
     existing: ExistingMarks = ExistingMarks()
+    fail_find_existing: bool = False
+    fail_suppress: bool = False
+    fail_unsuppress: bool = False
     fail_build: bool = False
     fail_delete_existing: bool = False
+    fail_delete_parameters: bool = False
     calls: list[str] = field(default_factory=list)
     created_parameters: tuple[object, ...] = ()
 
@@ -27,10 +31,16 @@ class FakeBackend:
 
     def find_existing_marks(self) -> ExistingMarks:
         self.calls.append("find_existing_marks")
+        if self.fail_find_existing:
+            raise RuntimeError("ownership lookup failed")
         return self.existing
 
     def set_cut_suppressed(self, cut: object, suppressed: bool) -> None:
         self.calls.append(f"suppress:{suppressed}")
+        if suppressed and self.fail_suppress:
+            raise RuntimeError("suppression failed")
+        if not suppressed and self.fail_unsuppress:
+            raise RuntimeError("restoration failed")
 
     def build(self) -> BuildArtifacts:
         self.calls.append("build")
@@ -43,11 +53,10 @@ class FakeBackend:
         if self.fail_delete_existing:
             raise RuntimeError("existing mark deletion failed")
 
-    def delete_artifacts(self, artifacts: BuildArtifacts) -> None:
-        self.calls.append("delete_artifacts")
-
     def delete_parameters(self, parameters: tuple[object, ...]) -> None:
         self.calls.append("delete_parameters")
+        if self.fail_delete_parameters:
+            raise RuntimeError("parameter cleanup failed")
 
 
 def test_first_build_returns_counts_without_suppression() -> None:
@@ -82,19 +91,94 @@ def test_failed_rebuild_restores_old_cut_and_new_parameters() -> None:
     assert "delete_existing" not in backend.calls
 
 
-def test_failed_existing_mark_deletion_cleans_new_state_before_restoring_old_cut() -> None:
-    parameter = object()
+def test_find_failure_removes_new_parameters() -> None:
+    backend = FakeBackend(
+        fail_find_existing=True,
+        created_parameters=(object(),),
+    )
+
+    with pytest.raises(RuntimeError, match="ownership lookup failed"):
+        rebuild_bend_marks(backend)
+
+    assert backend.calls[-1] == "delete_parameters"
+
+
+def test_parameter_cleanup_failure_preserves_find_error() -> None:
+    backend = FakeBackend(
+        fail_find_existing=True,
+        fail_delete_parameters=True,
+        created_parameters=(object(),),
+    )
+
+    with pytest.raises(RuntimeError, match="ownership lookup failed") as raised:
+        rebuild_bend_marks(backend)
+
+    assert backend.calls[-1] == "delete_parameters"
+    assert raised.value.__notes__ == ["Parameter cleanup failed: parameter cleanup failed"]
+
+
+def test_suppression_failure_restores_possibly_mutated_cut() -> None:
+    backend = FakeBackend(
+        existing=ExistingMarks("old-sketch", "old-cut"),
+        fail_suppress=True,
+        created_parameters=(object(),),
+    )
+
+    with pytest.raises(RuntimeError, match="suppression failed"):
+        rebuild_bend_marks(backend)
+
+    assert backend.calls[-2:] == ["suppress:False", "delete_parameters"]
+
+
+@pytest.mark.parametrize(
+    ("fail_unsuppress", "fail_delete_parameters", "expected_notes"),
+    [
+        (True, False, ["Cut restoration failed: restoration failed"]),
+        (False, True, ["Parameter cleanup failed: parameter cleanup failed"]),
+        (
+            True,
+            True,
+            [
+                "Cut restoration failed: restoration failed",
+                "Parameter cleanup failed: parameter cleanup failed",
+            ],
+        ),
+    ],
+)
+def test_cleanup_failures_preserve_build_error_and_attempt_all_recovery(
+    fail_unsuppress: bool,
+    fail_delete_parameters: bool,
+    expected_notes: list[str],
+) -> None:
+    backend = FakeBackend(
+        existing=ExistingMarks("old-sketch", "old-cut"),
+        fail_build=True,
+        fail_unsuppress=fail_unsuppress,
+        fail_delete_parameters=fail_delete_parameters,
+        created_parameters=(object(),),
+    )
+
+    with pytest.raises(RuntimeError, match="profile creation failed") as raised:
+        rebuild_bend_marks(backend)
+
+    assert backend.calls[-2:] == ["suppress:False", "delete_parameters"]
+    assert raised.value.__notes__ == expected_notes
+
+
+def test_failed_existing_mark_deletion_preserves_committed_build() -> None:
     backend = FakeBackend(
         existing=ExistingMarks("old-sketch", "old-cut"),
         fail_delete_existing=True,
-        created_parameters=(parameter,),
+        created_parameters=(object(),),
     )
 
     with pytest.raises(RuntimeError, match="existing mark deletion failed"):
         rebuild_bend_marks(backend)
 
     assert backend.calls[-3:] == [
-        "delete_artifacts",
-        "suppress:False",
-        "delete_parameters",
+        "suppress:True",
+        "build",
+        "delete_existing",
     ]
+    assert "suppress:False" not in backend.calls
+    assert "delete_parameters" not in backend.calls

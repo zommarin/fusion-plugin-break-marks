@@ -214,7 +214,7 @@ git commit -m "feat: calculate endpoint bend marks"
 - Create: `tests/test_service.py`
 
 **Interfaces:**
-- Consumes: A `BendMarksBackend` implementation with `prepare`, parameter, ownership, suppression, build, deletion, and cleanup operations.
+- Consumes: A `BendMarksBackend` implementation with `prepare`, parameter, ownership, suppression, build, and deletion operations.
 - Produces: `BuildResult(processed_bends: int, created_marks: int, skipped_bends: int)`, `BuildArtifacts`, `ExistingMarks`, `BendMarksError`, and `rebuild_bend_marks(backend: BendMarksBackend) -> BuildResult`.
 
 - [ ] **Step 1: Write failing orchestration tests**
@@ -264,9 +264,6 @@ class FakeBackend:
     def delete_existing_marks(self, marks: ExistingMarks) -> None:
         self.calls.append("delete_existing")
 
-    def delete_artifacts(self, artifacts: BuildArtifacts) -> None:
-        self.calls.append("delete_artifacts")
-
     def delete_parameters(self, parameters: tuple[object, ...]) -> None:
         self.calls.append("delete_parameters")
 
@@ -311,7 +308,7 @@ Expected: FAIL during collection because `BendMarks.service` does not exist.
 
 - [ ] **Step 3: Implement service protocol and transaction**
 
-Create `BendMarks/service.py`. `build` must clean its own partial Fusion entities if it raises before returning `BuildArtifacts`; returned artifacts are cleaned only when a later commit step fails:
+Create `BendMarks/service.py`. `build` is atomic: it must clean its own partial Fusion entities if it raises, and successful return of `BuildArtifacts` is the commit point. Old-mark deletion is post-commit cleanup; if it fails, preserve the new artifacts and leave the old cut suppressed:
 
 ```python
 from __future__ import annotations
@@ -351,32 +348,37 @@ class BendMarksBackend(Protocol):
     def set_cut_suppressed(self, cut: object, suppressed: bool) -> None: ...
     def build(self) -> BuildArtifacts: ...
     def delete_existing_marks(self, marks: ExistingMarks) -> None: ...
-    def delete_artifacts(self, artifacts: BuildArtifacts) -> None: ...
     def delete_parameters(self, parameters: tuple[object, ...]) -> None: ...
 
 
 def rebuild_bend_marks(backend: BendMarksBackend) -> BuildResult:
     backend.prepare()
     created_parameters = backend.ensure_parameters()
-    existing = backend.find_existing_marks()
-    artifacts: BuildArtifacts | None = None
-    suppressed = existing.cut is not None
+    existing = ExistingMarks()
+    cut_to_restore: object | None = None
     try:
+        existing = backend.find_existing_marks()
         if existing.cut is not None:
+            cut_to_restore = existing.cut
             backend.set_cut_suppressed(existing.cut, True)
         artifacts = backend.build()
-        backend.delete_existing_marks(existing)
-        return artifacts.result
-    except Exception:
-        if artifacts is not None:
-            backend.delete_artifacts(artifacts)
-        if suppressed and existing.cut is not None:
-            backend.set_cut_suppressed(existing.cut, False)
-        backend.delete_parameters(created_parameters)
+    except Exception as error:
+        if cut_to_restore is not None:
+            try:
+                backend.set_cut_suppressed(cut_to_restore, False)
+            except Exception as cleanup_error:
+                error.add_note(f"Cut restoration failed: {cleanup_error}")
+        try:
+            backend.delete_parameters(created_parameters)
+        except Exception as cleanup_error:
+            error.add_note(f"Parameter cleanup failed: {cleanup_error}")
         raise
+
+    backend.delete_existing_marks(existing)
+    return artifacts.result
 ```
 
-Add one test where `delete_existing_marks` raises after successful `build`; assert `delete_artifacts`, unsuppression, and parameter cleanup occur in that order.
+Add tests where ownership lookup, suppression, or build fails after parameter creation. Assert every applicable recovery action is attempted independently, the primary failure remains raised, and cleanup failures are attached as exception notes. Add one test where `delete_existing_marks` raises after successful `build`; assert new artifacts remain committed, the old cut remains suppressed, and created parameters are retained.
 
 - [ ] **Step 4: Run focused and static checks**
 
@@ -524,7 +526,6 @@ Implement remaining backend methods exactly:
 
 - `set_cut_suppressed`: assign `cut.isSuppressed` and verify resulting value.
 - `delete_existing_marks`: delete old cut first, then old sketch; no-op for missing members.
-- `delete_artifacts`: delete new cut first, then new sketch.
 - `delete_parameters`: call `deleteMe()` in reverse creation order.
 
 Raise `BendMarksError` when a required delete or suppression operation reports failure.
