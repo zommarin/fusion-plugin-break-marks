@@ -13,7 +13,7 @@ lint:
     uv run ruff check .
 
 typecheck:
-    uv run ty check tests
+    uv run ty check .
 
 test:
     uv run pytest
