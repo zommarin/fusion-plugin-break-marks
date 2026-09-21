@@ -570,6 +570,43 @@ def test_projection_failure_deletes_partial_sketch(monkeypatch: pytest.MonkeyPat
     assert log == ["delete sketch"]
 
 
+def test_projection_exception_includes_bend_context_and_deletes_sketch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend, sketch, _, log = build_ready_backend(monkeypatch)
+
+    def fail(_edge: object) -> object:
+        raise RuntimeError("projection failed")
+
+    monkeypatch.setattr(sketch, "project", fail)
+
+    with pytest.raises(BendMarksError, match="Bend 1: could not project centerline") as raised:
+        backend.build()
+
+    assert isinstance(raised.value.__cause__, RuntimeError)
+    assert sketch.deleted
+    assert log == ["delete sketch"]
+
+
+@pytest.mark.parametrize(
+    "projection",
+    [None, FakeCollection([FakeArc3D()])],
+    ids=["null", "wrong-type"],
+)
+def test_invalid_projection_result_includes_bend_context_and_deletes_sketch(
+    monkeypatch: pytest.MonkeyPatch,
+    projection: object,
+) -> None:
+    backend, sketch, _, log = build_ready_backend(monkeypatch)
+    monkeypatch.setattr(sketch, "project", lambda _edge: projection)
+
+    with pytest.raises(BendMarksError, match="Bend 1: could not project centerline"):
+        backend.build()
+
+    assert sketch.deleted
+    assert log == ["delete sketch"]
+
+
 @pytest.mark.parametrize(
     ("failure", "operation"),
     [

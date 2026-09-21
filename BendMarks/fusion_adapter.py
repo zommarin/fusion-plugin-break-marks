@@ -166,6 +166,18 @@ class FusionBackend:
         dimension.parameter.expression = expression
         return True
 
+    @staticmethod
+    def _project_line(sketch: Any, edge: object, bend_index: int) -> Any:
+        message = f"Bend {bend_index}: could not project centerline"
+        try:
+            projection = sketch.project(edge)
+            projected = _collection_items(projection) if projection is not None else ()
+        except Exception as error:
+            raise BendMarksError(message) from error
+        if len(projected) != 1 or not _is_sketch_line(projected[0]):
+            raise BendMarksError(message)
+        return cast(Any, projected[0])
+
     def _add_rectangle(
         self,
         sketch: Any,
@@ -283,10 +295,7 @@ class FusionBackend:
 
             values = self._parameter_values()
             for bend_index, edge in enumerate(self.straight_edges, start=1):
-                projected = _collection_items(sketch.project(edge))
-                if len(projected) != 1 or not _is_sketch_line(projected[0]):
-                    raise BendMarksError(f"Bend {bend_index}: could not project centerline")
-                projected_line = cast(Any, projected[0])
+                projected_line = self._project_line(sketch, edge, bend_index)
                 projected_line.isConstruction = True
                 start_point = projected_line.startSketchPoint
                 end_point = projected_line.endSketchPoint
