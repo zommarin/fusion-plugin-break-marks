@@ -16,7 +16,7 @@
 - Create two flat-pattern-only cutouts per supported bend and skip curved bend centerlines with a warning count.
 - Use named length parameters `bend_mark_width` (`1.8 mm`), `bend_mark_inset` (`1 mm`), and `bend_mark_overhang` (`1 mm`); all values must remain positive.
 - Tag generated sketch and cut with Fusion attributes; never establish ownership from display names.
-- Reruns replace prior tagged marks and restore prior marks if replacement fails.
+- Reruns replace prior tagged marks. Any failure marks command execution failed so Fusion aborts the transaction and restores pre-command marks.
 - Keep newer flat-pattern API dynamic access inside the Fusion adapter because current development stubs omit those classes.
 - Require Fusion API October 2022 or newer, when `FlatPattern.bendLinesBody` was introduced.
 - Keep `adsk` development-only; Fusion supplies it at runtime.
@@ -308,7 +308,7 @@ Expected: FAIL during collection because `BendMarks.service` does not exist.
 
 - [ ] **Step 3: Implement service protocol and transaction**
 
-Create `BendMarks/service.py`. `build` is atomic: it must clean its own partial Fusion entities if it raises, and successful return of `BuildArtifacts` is the commit point. Old-mark deletion is post-commit cleanup; if it fails, preserve the new artifacts and leave the old cut suppressed:
+Create `BendMarks/service.py`. `build` must clean its own partial Fusion entities if it raises. A successful `BuildArtifacts` return permits the service to begin deleting old marks, but the command commits only after that deletion succeeds. If old-mark deletion fails, propagate the primary error without manually reconstructing state after `build()`; the execute handler marks execution failed and Fusion aborts the transaction:
 
 ```python
 from __future__ import annotations
@@ -378,7 +378,7 @@ def rebuild_bend_marks(backend: BendMarksBackend) -> BuildResult:
     return artifacts.result
 ```
 
-Add tests where ownership lookup, suppression, or build fails after parameter creation. Assert every applicable recovery action is attempted independently, the primary failure remains raised, and cleanup failures are attached as exception notes. Add one test where `delete_existing_marks` raises after successful `build`; assert new artifacts remain committed, the old cut remains suppressed, and created parameters are retained.
+Add tests where ownership lookup, suppression, or build fails after parameter creation. Assert every applicable recovery action is attempted independently, the primary failure remains raised, and cleanup failures are attached as exception notes. Add one test where `delete_existing_marks` raises after successful `build`; assert the failure propagates without service-level reconstruction. Add a command-level test proving that propagated cleanup failure sets `executeFailed` and preserves the primary diagnostic, allowing Fusion to abort the command transaction.
 
 - [ ] **Step 4: Run focused and static checks**
 
@@ -640,7 +640,7 @@ Created {created_marks} bend marks across {processed_bends} bends.
 Skipped {skipped_bends} unsupported curved bends.
 ```
 
-Omit the second line when skipped count is zero. Catch `BendMarksError` and show its message. Catch unexpected exceptions and show `traceback.format_exc()` prefixed with `Create Bend Marks failed:` so API failures remain diagnosable.
+Omit the second line when skipped count is zero. Catch `BendMarksError`, set `eventArgs.executeFailed = True`, and show its primary message. Catch unexpected exceptions, also set `executeFailed`, and show `traceback.format_exc()` prefixed with `Create Bend Marks failed:` so API failures remain diagnosable. This failure signal makes Fusion abort the command transaction, including when old-mark deletion fails after `build()` succeeds.
 
 `stop` must delete the command control, panel, and command definition if present, then clear `_handlers`. Make every removal idempotent so reload and partial startup both work.
 
@@ -695,6 +695,7 @@ def test_readme_documents_required_workflow() -> None:
         "bend_mark_overhang",
         "active flat pattern",
         "October 2022",
+        "aborts the command transaction",
     ):
         assert phrase in readme
 

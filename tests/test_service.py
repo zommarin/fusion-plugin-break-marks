@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 import pytest
 
 from BendMarks.service import (
+    BendMarksError,
     BuildArtifacts,
     BuildResult,
     ExistingMarks,
@@ -51,7 +52,7 @@ class FakeBackend:
     def delete_existing_marks(self, marks: ExistingMarks) -> None:
         self.calls.append("delete_existing")
         if self.fail_delete_existing:
-            raise RuntimeError("existing mark deletion failed")
+            raise BendMarksError("existing mark deletion failed")
 
     def delete_parameters(self, parameters: tuple[object, ...]) -> None:
         self.calls.append("delete_parameters")
@@ -165,7 +166,7 @@ def test_cleanup_failures_preserve_build_error_and_attempt_all_recovery(
     assert raised.value.__notes__ == expected_notes
 
 
-def test_failed_existing_mark_deletion_preserves_committed_build() -> None:
+def test_existing_mark_deletion_failure_propagates_without_manual_recovery() -> None:
     backend = FakeBackend(
         existing=ExistingMarks("old-sketch", "old-cut"),
         fail_delete_existing=True,

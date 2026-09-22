@@ -6,7 +6,8 @@ from typing import Any, cast
 import pytest
 
 from BendMarks import BendMarks
-from BendMarks.service import BendMarksError, BuildResult
+from BendMarks.service import BendMarksError, BuildResult, ExistingMarks
+from tests.test_service import FakeBackend
 
 
 class FakeEvent:
@@ -433,6 +434,25 @@ def test_execute_reports_domain_error(monkeypatch: Any) -> None:
 
     assert event_args.executeFailed is True
     assert ui.messages == ["Open a flat pattern"]
+
+
+def test_existing_mark_deletion_failure_aborts_command_with_primary_diagnostic(
+    monkeypatch: Any,
+) -> None:
+    ui = FakeUI()
+    application = _application(ui)
+    backend = FakeBackend(
+        existing=ExistingMarks(sketch="old-sketch", cut="old-cut"),
+        fail_delete_existing=True,
+    )
+    monkeypatch.setattr(BendMarks, "FusionBackend", lambda _application: backend)
+
+    event_args = SimpleNamespace(executeFailed=False)
+    BendMarks._ExecuteHandler(application).notify(cast(Any, event_args))
+
+    assert event_args.executeFailed is True
+    assert backend.calls[-2:] == ["build", "delete_existing"]
+    assert ui.messages == ["existing mark deletion failed"]
 
 
 def test_execute_reports_unexpected_traceback(monkeypatch: Any) -> None:

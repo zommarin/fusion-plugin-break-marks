@@ -10,6 +10,7 @@ def test_readme_documents_required_workflow() -> None:
         "bend_mark_overhang",
         "active flat pattern",
         "October 2022",
+        "aborts the command transaction",
     ):
         assert phrase in readme
 

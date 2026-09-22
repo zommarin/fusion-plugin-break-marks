@@ -32,8 +32,9 @@ start it again after updating the add-in files. You may also enable startup load
 
 The command requires an active flat pattern. It creates one tagged `Bend Marks` sketch and one
 tagged `Bend Marks Cut` through-all cut. Running **Create Bend Marks** again builds replacement
-geometry first, then removes the previous tagged sketch and cut. A failed rerun preserves the
-previous marks.
+geometry first, then removes the previous tagged sketch and cut. Any failure, including failure to
+remove previous owned entities, aborts the command transaction so Fusion restores the pre-command
+marks. The add-in never treats replacement geometry as committed after cleanup fails.
 
 ### Parameters
 

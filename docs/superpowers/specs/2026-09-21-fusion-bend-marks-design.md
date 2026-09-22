@@ -60,9 +60,9 @@ All valid endpoint rectangles form closed profiles in one sketch named `Bend Mar
 
 Generated sketch and cut entities receive add-in-specific Fusion attributes. Names remain human-readable but are not used to establish ownership.
 
-Before mutation, the command validates active context, parameter values, bend availability, and supported geometry. On rerun it temporarily suppresses the previously tagged cut so the removed material is restored, builds the replacement sketch and cut, then deletes the old cut and sketch only after the replacement succeeds. It never deletes untagged user geometry, even if names match.
+Before mutation, the command validates active context, parameter values, bend availability, and supported geometry. On rerun it temporarily suppresses the previously tagged cut so the removed material is restored, builds the replacement sketch and cut, then deletes the old cut and sketch only after the replacement succeeds. Failure to delete either owned entity propagates from the service rather than leaving stale owned entities on a successful path. It never deletes untagged user geometry, even if names match.
 
-Execution occurs within the command's single undoable transaction. If replacement fails, the adapter deletes any partially created entities, restores the prior cut's suppression state, and removes user parameters created by the failed attempt. This explicit cleanup preserves the previous result without relying on exception-driven Fusion rollback.
+Execution occurs within the command's single undoable transaction. Before `build()` succeeds, explicit recovery deletes partial entities, restores the prior cut's suppression state, and removes user parameters created by the failed attempt while preserving the primary diagnostic. After `build()` succeeds, the service does not manually reconstruct prior state. Any old-entity deletion failure reaches the execute handler, which sets `executeFailed`; Fusion then aborts the command transaction and restores the complete pre-command state.
 
 ## Error Handling
 
@@ -74,7 +74,7 @@ The command leaves the design unchanged and reports a clear message when:
 - No supported straight bend lines remain after filtering.
 - Sketch profiles or the cut feature cannot be created.
 
-If straight and curved bends coexist, straight bends are processed and curved bends are counted as skipped. Unexpected Fusion API failures include operation context in the displayed error and are not silently ignored.
+If straight and curved bends coexist, straight bends are processed and curved bends are counted as skipped. Unexpected Fusion API failures include operation context in the displayed error and are not silently ignored. Every propagated domain or cleanup failure marks command execution failed so the transaction cannot commit replacement artifacts.
 
 ## Testing
 

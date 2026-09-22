@@ -12,6 +12,17 @@ def test_horizontal_bend_creates_outward_and_inward_extents() -> None:
     assert end.corners == (Point2(11, 1), Point2(11, -1), Point2(7, -1), Point2(7, 1))
 
 
+def test_vertical_bend_has_width_and_extents_at_both_endpoints() -> None:
+    start, end = endpoint_rectangles(Point2(2, -3), Point2(2, 7), 4, 3, 1)
+
+    assert start.corners == (Point2(4, -4), Point2(0, -4), Point2(0, 0), Point2(4, 0))
+    assert end.corners == (Point2(0, 8), Point2(4, 8), Point2(4, 4), Point2(0, 4))
+    assert start.width == 4
+    assert end.width == 4
+    assert (start.outer_midpoint, start.inner_midpoint) == (Point2(2, -4), Point2(2, 0))
+    assert (end.outer_midpoint, end.inner_midpoint) == (Point2(2, 8), Point2(2, 4))
+
+
 def test_diagonal_bend_centers_width_on_centerline() -> None:
     start, _ = endpoint_rectangles(Point2(0, 0), Point2(2, 2), 2, 1, 1)
     root_two = sqrt(2)
