@@ -394,7 +394,7 @@ def test_profile_discovery_accepts_only_fully_tagged_boundaries() -> None:
         [generated_edge(side="left"), generated_edge(side="right")] + [generated_edge()] * 2
     )
     wrong_edge_count = fake_profile([generated_edge() for _ in range(3)])
-    multiple_loops = fake_profile([generated_edge() for _ in range(4)], extra_loop=True)
+    unrelated_multiple_loops = fake_profile([untagged_edge() for _ in range(4)], extra_loop=True)
     backend = prepared_cut_backend(
         profiles=[
             valid,
@@ -403,11 +403,21 @@ def test_profile_discovery_accepts_only_fully_tagged_boundaries() -> None:
             mixed_sources,
             mixed_sides,
             wrong_edge_count,
-            multiple_loops,
+            unrelated_multiple_loops,
         ]
     )
 
     assert backend.discover_profiles() == (valid,)
+
+
+def test_profile_discovery_rejects_tagged_profile_with_multiple_loops() -> None:
+    tagged_multiple_loops = fake_profile(
+        [generated_edge() for _ in range(4)], extra_loop=True
+    )
+    backend = prepared_cut_backend(profiles=[tagged_multiple_loops])
+
+    with pytest.raises(BendMarksError, match="exactly one loop"):
+        backend.discover_profiles()
 
 
 @pytest.mark.parametrize(

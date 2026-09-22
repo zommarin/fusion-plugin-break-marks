@@ -238,13 +238,33 @@ class InteractiveCutBackend:
         discovered: list[object] = []
         for profile in _collection_items(cast(Any, self.sketch).profiles):
             loops = _collection_items(cast(Any, profile).profileLoops)
+            loop_curves = tuple(
+                _collection_items(cast(Any, loop).profileCurves) for loop in loops
+            )
+            entities = [
+                cast(Any, curve).sketchEntity
+                for curves in loop_curves
+                for curve in curves
+            ]
             if len(loops) != 1:
+                metadata_names = (
+                    NOTCH_EDGE_ATTRIBUTE,
+                    GEOMETRY_SOURCE_ATTRIBUTE,
+                    GEOMETRY_SIDE_ATTRIBUTE,
+                )
+                if any(
+                    _attribute_value(entity, name) is not None
+                    for entity in entities
+                    for name in metadata_names
+                ):
+                    raise BendMarksError(
+                        "Generated notch profile must contain exactly one loop"
+                    )
                 continue
-            curves = _collection_items(cast(Any, loops[0]).profileCurves)
+            curves = loop_curves[0]
             if len(curves) != 4:
                 continue
 
-            entities = [cast(Any, curve).sketchEntity for curve in curves]
             notch_tags = [_attribute_value(entity, NOTCH_EDGE_ATTRIBUTE) for entity in entities]
             source_ids = [
                 _attribute_value(entity, GEOMETRY_SOURCE_ATTRIBUTE) for entity in entities
