@@ -2,11 +2,17 @@ from dataclasses import dataclass, field
 
 import pytest
 
+from BendMarks.geometry import NotchSide
 from BendMarks.service import (
     BendMarksError,
     BuildArtifacts,
     BuildResult,
+    CreateNotchesResult,
+    CutNotchesResult,
     ExistingMarks,
+    ParameterExpressions,
+    create_selected_notches,
+    cut_selected_notches,
     rebuild_bend_marks,
 )
 
@@ -60,6 +66,61 @@ class FakeBackend:
         self.calls.append("delete_parameters")
         if self.fail_delete_parameters:
             raise RuntimeError("parameter cleanup failed")
+
+
+@dataclass
+class FakeInteractiveNotchBackend:
+    existing: tuple[object, ...] = ()
+    calls: list[str] = field(default_factory=list)
+
+    def prepare(self) -> None:
+        self.calls.append("prepare")
+
+    def update_parameters(self, expressions: ParameterExpressions) -> None:
+        self.calls.append(f"parameters:{expressions.width}")
+
+    def find_existing_geometry(self) -> tuple[object, ...]:
+        self.calls.append("find")
+        return self.existing
+
+    def delete_geometry(self, geometry: tuple[object, ...]) -> None:
+        self.calls.append(f"delete:{len(geometry)}")
+
+    def build(self, side: NotchSide) -> CreateNotchesResult:
+        self.calls.append(f"build:{side.value}")
+        return CreateNotchesResult(2, 4)
+
+
+@dataclass
+class FakeInteractiveCutBackend:
+    existing_cut: object | None = None
+    fail_build: bool = False
+    fail_delete: bool = False
+    fail_unsuppress: bool = False
+    calls: list[str] = field(default_factory=list)
+
+    def prepare(self) -> None:
+        self.calls.append("prepare")
+
+    def find_existing_cut(self) -> object | None:
+        self.calls.append("find")
+        return self.existing_cut
+
+    def set_cut_suppressed(self, cut: object, suppressed: bool) -> None:
+        self.calls.append(f"suppress:{suppressed}")
+        if not suppressed and self.fail_unsuppress:
+            raise RuntimeError("restoration failed")
+
+    def build(self) -> CutNotchesResult:
+        self.calls.append("build")
+        if self.fail_build:
+            raise RuntimeError("cut failed")
+        return CutNotchesResult(3)
+
+    def delete_cut(self, cut: object) -> None:
+        self.calls.append("delete")
+        if self.fail_delete:
+            raise RuntimeError("delete failed")
 
 
 def test_first_build_returns_counts_without_suppression() -> None:
@@ -198,3 +259,74 @@ def test_existing_mark_deletion_failure_propagates_without_manual_recovery() -> 
     ]
     assert "suppress:False" not in backend.calls
     assert "delete_parameters" not in backend.calls
+
+
+def test_create_selected_notches_replaces_only_discovered_geometry() -> None:
+    backend = FakeInteractiveNotchBackend(existing=(object(), object()))
+
+    result = create_selected_notches(
+        backend,
+        ParameterExpressions("2 mm", "1 mm", "0.5 mm"),
+        NotchSide.BOTH,
+    )
+
+    assert result == CreateNotchesResult(2, 4)
+    assert backend.calls == [
+        "prepare",
+        "parameters:2 mm",
+        "find",
+        "delete:2",
+        "build:both",
+    ]
+
+
+def test_cut_selected_notches_builds_first_cut_without_replacement() -> None:
+    backend = FakeInteractiveCutBackend()
+
+    assert cut_selected_notches(backend) == CutNotchesResult(3)
+    assert backend.calls == ["prepare", "find", "build"]
+
+
+def test_cut_selected_notches_replaces_prior_cut() -> None:
+    backend = FakeInteractiveCutBackend(existing_cut="old-cut")
+
+    assert cut_selected_notches(backend) == CutNotchesResult(3)
+    assert backend.calls == [
+        "prepare",
+        "find",
+        "suppress:True",
+        "build",
+        "delete",
+    ]
+
+
+def test_failed_interactive_cut_restores_prior_cut() -> None:
+    backend = FakeInteractiveCutBackend(existing_cut="old-cut", fail_build=True)
+
+    with pytest.raises(RuntimeError, match="cut failed"):
+        cut_selected_notches(backend)
+
+    assert backend.calls[-2:] == ["build", "suppress:False"]
+
+
+def test_interactive_cut_restoration_failure_preserves_build_error() -> None:
+    backend = FakeInteractiveCutBackend(
+        existing_cut="old-cut",
+        fail_build=True,
+        fail_unsuppress=True,
+    )
+
+    with pytest.raises(RuntimeError, match="cut failed") as raised:
+        cut_selected_notches(backend)
+
+    assert raised.value.__notes__ == ["Cut restoration failed: restoration failed"]
+
+
+def test_interactive_cut_delete_failure_propagates_without_manual_recovery() -> None:
+    backend = FakeInteractiveCutBackend(existing_cut="old-cut", fail_delete=True)
+
+    with pytest.raises(RuntimeError, match="delete failed"):
+        cut_selected_notches(backend)
+
+    assert backend.calls[-2:] == ["build", "delete"]
+    assert "suppress:False" not in backend.calls
