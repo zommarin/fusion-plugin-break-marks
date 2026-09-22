@@ -238,22 +238,21 @@ class FusionBackend:
         outer_line.isConstruction = True
         inner_line.isConstruction = True
 
-        for construction, midpoint, edge in (
-            (outer_line, outer_line.startSketchPoint, rectangle_lines[0]),
-            (inner_line, inner_line.endSketchPoint, rectangle_lines[2]),
-        ):
-            self._bend_operation(
-                bend_index,
-                "could not add midpoint constraint",
-                lambda midpoint=midpoint, edge=edge: constraints.addMidPoint(midpoint, edge),
-            )
-            self._bend_operation(
-                bend_index,
-                "could not add collinear constraint",
-                lambda construction=construction: constraints.addCollinear(
-                    construction, projected_line
-                ),
-            )
+        self._bend_operation(
+            bend_index,
+            "could not add midpoint constraint",
+            lambda: constraints.addMidPoint(outer_line.startSketchPoint, rectangle_lines[0]),
+        )
+        self._bend_operation(
+            bend_index,
+            "could not add collinear constraint",
+            lambda: constraints.addCollinear(outer_line, projected_line),
+        )
+        self._bend_operation(
+            bend_index,
+            "could not add midpoint constraint",
+            lambda: constraints.addMidPoint(inner_line.endSketchPoint, rectangle_lines[2]),
+        )
 
         orientation = adsk.fusion.DimensionOrientations.AlignedDimensionOrientation
         dimension_specs = (
@@ -342,8 +341,9 @@ class FusionBackend:
             )
             if extrude_input is None:
                 raise BendMarksError("Could not create bend mark cut input")
-            if not extrude_input.setAllExtent(
-                adsk.fusion.ExtentDirections.SymmetricExtentDirection
+            through_all = adsk.fusion.ThroughAllExtentDefinition.create()
+            if through_all is None or not extrude_input.setOneSideExtent(
+                through_all, adsk.fusion.ExtentDirections.NegativeExtentDirection
             ):
                 raise BendMarksError("Could not set bend mark cut to through-all")
             cut = extrudes.add(extrude_input)

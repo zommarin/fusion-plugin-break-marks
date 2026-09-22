@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any, cast
 
+import adsk.fusion
 import pytest
 
 from BendMarks.fusion_adapter import FusionBackend, classify_bend_geometry, validate_parameter
@@ -434,9 +435,14 @@ class FakeExtrudeInput:
     def __init__(self, all_extent_result: bool = True) -> None:
         self.all_extent_result = all_extent_result
         self.extent_directions: list[object] = []
+        self.one_side_extents: list[tuple[object, object]] = []
 
     def setAllExtent(self, direction: object) -> bool:
         self.extent_directions.append(direction)
+        return self.all_extent_result
+
+    def setOneSideExtent(self, extent: object, direction: object) -> bool:
+        self.one_side_extents.append((extent, direction))
         return self.all_extent_result
 
 
@@ -489,6 +495,10 @@ def build_ready_backend(
     monkeypatch.setattr(
         "BendMarks.fusion_adapter.adsk.core.ObjectCollection.create", FakeObjectCollection
     )
+    monkeypatch.setattr(
+        "BendMarks.fusion_adapter.adsk.fusion.ThroughAllExtentDefinition.create",
+        lambda: "through-all",
+    )
     log: list[str] = []
     sketch = FakeSketch(log, projected_items, profiles_enabled=profiles_enabled)
     extrudes = FakeExtrudes(
@@ -513,7 +523,7 @@ def build_ready_backend(
     return backend, sketch, extrudes, log
 
 
-def test_build_creates_constrained_rectangles_and_committed_cut(
+def test_build_avoids_redundant_collinear_constraints_and_commits_cut(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     backend, sketch, extrudes, _ = build_ready_backend(monkeypatch)
@@ -543,7 +553,6 @@ def test_build_creates_constrained_rectangles_and_committed_cut(
         "midpoint",
         "collinear",
         "midpoint",
-        "collinear",
     ] * 2
     assert [dimension.parameter.expression for dimension in sketch.sketchDimensions.created] == [
         "bend_mark_overhang",
@@ -554,6 +563,10 @@ def test_build_creates_constrained_rectangles_and_committed_cut(
     assert extrudes.cut.attributes.added == [("fusion-plugin-bend-marks", "generated-cut", "1")]
     assert extrudes.create_arguments is not None
     assert isinstance(extrudes.create_arguments[0], FakeObjectCollection)
+    assert extrudes.input.one_side_extents == [
+        ("through-all", adsk.fusion.ExtentDirections.NegativeExtentDirection)
+    ]
+    assert extrudes.input.extent_directions == []
     profiles = extrudes.create_arguments[0].items
     assert len(profiles) == 2
     assert all(isinstance(profile, FakeProfile) for profile in profiles)
