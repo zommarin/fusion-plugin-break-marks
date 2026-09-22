@@ -52,6 +52,7 @@ class FakeEntity:
         self.events = events
         self.delete_result = delete_result
         self.delete_error = delete_error
+        self.isPromoted = False
 
     def deleteMe(self) -> bool:
         self.events.append(f"delete:{self.id}")
@@ -86,23 +87,6 @@ class FakePanel(FakeEntity):
         self.controls = FakeControls(events)
 
 
-class FakePanels(FakeCollection):
-    def __init__(self, events: list[str]) -> None:
-        super().__init__()
-        self.events = events
-
-    def add(self, panel_id: str, name: str, position_id: str, is_before: bool) -> FakePanel:
-        assert (panel_id, name, position_id, is_before) == (
-            BendMarks.PANEL_ID,
-            "Bend Marks",
-            "",
-            False,
-        )
-        panel = FakePanel(self.events)
-        self.entities[panel_id] = panel
-        return panel
-
-
 class FakeDefinition(FakeEntity):
     def __init__(self, events: list[str], command_created_add_result: bool = True) -> None:
         super().__init__(BendMarks.COMMAND_ID, events)
@@ -126,27 +110,35 @@ class FakeDefinitions(FakeCollection):
 
 
 class FakeUI:
-    def __init__(self, *, has_tab: bool = True) -> None:
+    def __init__(self, *, has_panel: bool = True) -> None:
         self.events: list[str] = []
         self.messages: list[str] = []
         self.commandDefinitions = FakeDefinitions(self.events)
-        self.panels = FakePanels(self.events)
+        self.flat_pattern_panels = FakeCollection(
+            {"SolidCreatePanel": FakePanel(self.events)} if has_panel else {}
+        )
+        self.sheet_metal_panels = FakeCollection(
+            {"SolidCreatePanel": FakePanel(self.events)} if has_panel else {}
+        )
+        self.panels = self.flat_pattern_panels
         self.allToolbarPanels = self.panels
-        tab = SimpleNamespace(toolbarPanels=self.panels) if has_tab else None
-        self.allToolbarTabs = FakeCollection({BendMarks.TAB_ID: tab} if tab else {})
+        self.allToolbarTabs = FakeCollection(
+            {"FlatPatternSolidTab": SimpleNamespace(toolbarPanels=self.flat_pattern_panels)}
+        )
 
     def messageBox(self, message: str) -> None:
         self.messages.append(message)
 
 
-def _application(ui: FakeUI) -> object:
-    return SimpleNamespace(userInterface=ui)
+def _application(ui: FakeUI) -> Any:
+    logs: list[str] = []
+    return SimpleNamespace(userInterface=ui, log=logs.append, logs=logs)
 
 
 def test_command_uses_stable_ids() -> None:
     assert BendMarks.COMMAND_ID == "zommarin_fusion_break_marks_create"
-    assert BendMarks.TAB_ID == "SheetMetalTab"
-    assert BendMarks.PANEL_ID == "zommarin_fusion_break_marks_panel"
+    assert BendMarks.TAB_ID == "FlatPatternSolidTab"
+    assert BendMarks.PANEL_ID == "SolidCreatePanel"
 
 
 def test_manifest_defines_cross_platform_addin() -> None:
@@ -171,7 +163,7 @@ def test_repeated_cleanup_tolerates_missing_objects() -> None:
     assert ui.events == []
 
 
-def test_cleanup_deletes_control_before_panel_and_definition() -> None:
+def test_cleanup_deletes_control_and_definition_but_preserves_builtin_panel() -> None:
     ui = FakeUI()
     panel = FakePanel(ui.events)
     panel.controls.entities[BendMarks.COMMAND_ID] = FakeEntity(BendMarks.COMMAND_ID, ui.events)
@@ -182,15 +174,14 @@ def test_cleanup_deletes_control_before_panel_and_definition() -> None:
 
     assert ui.events == [
         f"delete:{BendMarks.COMMAND_ID}",
-        f"delete:{BendMarks.PANEL_ID}",
         f"delete:{BendMarks.COMMAND_ID}",
     ]
+    assert ui.panels.itemById(BendMarks.PANEL_ID) is panel
 
 
 def test_cleanup_aggregates_failures_after_attempting_every_deletion() -> None:
     ui = FakeUI()
     panel = FakePanel(ui.events)
-    panel.delete_error = RuntimeError("panel API failed")
     panel.controls.entities[BendMarks.COMMAND_ID] = FakeEntity(
         BendMarks.COMMAND_ID, ui.events, delete_result=False
     )
@@ -204,12 +195,11 @@ def test_cleanup_aggregates_failures_after_attempting_every_deletion() -> None:
 
     assert ui.events == [
         f"delete:{BendMarks.COMMAND_ID}",
-        f"delete:{BendMarks.PANEL_ID}",
         f"delete:{BendMarks.COMMAND_ID}",
     ]
     assert str(error.value) == (
         "Bend Marks cleanup failed: command control: delete returned false; "
-        "toolbar panel: panel API failed; command definition: delete returned false"
+        "command definition: delete returned false"
     )
 
 
@@ -256,18 +246,35 @@ def test_run_registers_command_and_retains_created_and_execute_handlers(monkeypa
         execute_event.handlers[0],
         destroy_event.handlers[0],
     ]
-    assert ui.panels.itemById(BendMarks.PANEL_ID) is not None
+    panel = cast(Any, ui.panels.itemById(BendMarks.PANEL_ID))
+    control = panel.controls.itemById(BendMarks.COMMAND_ID)
+    assert control.isPromoted is True
+    assert application.logs == ["Bend Marks registered in FlatPatternSolidTab/SolidCreatePanel."]
 
 
-def test_run_removes_definition_and_reports_missing_sheet_metal_tab(monkeypatch: Any) -> None:
-    ui = FakeUI(has_tab=False)
+def test_run_registers_command_in_flat_pattern_create_panel(monkeypatch: Any) -> None:
+    ui = FakeUI()
+    application = _application(ui)
+    monkeypatch.setattr(BendMarks.adsk.core.Application, "get", lambda: application)
+    BendMarks._handlers.clear()
+
+    BendMarks.run(object())
+
+    flat_panel = cast(Any, ui.flat_pattern_panels.itemById("SolidCreatePanel"))
+    sheet_metal_panel = cast(Any, ui.sheet_metal_panels.itemById("SolidCreatePanel"))
+    assert flat_panel.controls.itemById(BendMarks.COMMAND_ID) is not None
+    assert sheet_metal_panel.controls.itemById(BendMarks.COMMAND_ID) is None
+
+
+def test_run_removes_definition_and_reports_missing_flat_pattern_panel(monkeypatch: Any) -> None:
+    ui = FakeUI(has_panel=False)
     monkeypatch.setattr(BendMarks.adsk.core.Application, "get", lambda: _application(ui))
     BendMarks._handlers.clear()
 
     BendMarks.run(object())
 
     assert ui.events == [f"delete:{BendMarks.COMMAND_ID}"]
-    assert ui.messages == ["Sheet Metal tab is unavailable."]
+    assert "Flat Pattern Solid Create panel is unavailable" in ui.messages[0]
     assert BendMarks._handlers == []
 
 
@@ -286,10 +293,8 @@ def test_stale_cleanup_failure_is_reported_and_retried_during_startup(monkeypatc
 
     assert ui.events == [
         f"delete:{BendMarks.COMMAND_ID}",
-        f"delete:{BendMarks.PANEL_ID}",
         f"delete:{BendMarks.COMMAND_ID}",
         f"delete:{BendMarks.COMMAND_ID}",
-        f"delete:{BendMarks.PANEL_ID}",
         f"delete:{BendMarks.COMMAND_ID}",
     ]
     assert ui.messages[0].startswith("Create Bend Marks failed to start:\nTraceback")
@@ -305,7 +310,7 @@ def test_rejected_command_created_handler_cleans_registration(monkeypatch: Any) 
 
     BendMarks.run(object())
 
-    assert ui.panels.itemById(BendMarks.PANEL_ID) is None
+    assert ui.panels.itemById(BendMarks.PANEL_ID) is not None
     assert ui.events == [f"delete:{BendMarks.COMMAND_ID}"]
     assert "Could not register command-created handler" in ui.messages[0]
     assert BendMarks._handlers == []
@@ -330,7 +335,6 @@ def test_rejected_execute_handler_cleans_registration(monkeypatch: Any) -> None:
 
     assert ui.events == [
         f"delete:{BendMarks.COMMAND_ID}",
-        f"delete:{BendMarks.PANEL_ID}",
         f"delete:{BendMarks.COMMAND_ID}",
     ]
     assert "Could not register execute handler" in ui.messages[0]
@@ -375,7 +379,6 @@ def test_destroy_handler_rejection_preserves_error_when_execute_rollback_fails(
     assert secondary_diagnostic in ui.messages[0]
     assert ui.events == [
         f"delete:{BendMarks.COMMAND_ID}",
-        f"delete:{BendMarks.PANEL_ID}",
         f"delete:{BendMarks.COMMAND_ID}",
     ]
     assert BendMarks._handlers == []
@@ -487,7 +490,6 @@ def test_stop_cleans_ui_and_handler_references(monkeypatch: Any) -> None:
 
     assert ui.events == [
         f"delete:{BendMarks.COMMAND_ID}",
-        f"delete:{BendMarks.PANEL_ID}",
         f"delete:{BendMarks.COMMAND_ID}",
     ]
     assert BendMarks._handlers == []

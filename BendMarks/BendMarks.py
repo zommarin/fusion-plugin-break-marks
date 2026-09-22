@@ -3,13 +3,13 @@ from typing import Any, cast
 
 import adsk.core
 
-from BendMarks.fusion_adapter import FusionBackend
-from BendMarks.service import BendMarksError, BuildResult, rebuild_bend_marks
+from .fusion_adapter import FusionBackend
+from .service import BendMarksError, BuildResult, rebuild_bend_marks
 
 COMMAND_ID = "zommarin_fusion_break_marks_create"
 COMMAND_NAME = "Create Bend Marks"
-TAB_ID = "SheetMetalTab"
-PANEL_ID = "zommarin_fusion_break_marks_panel"
+TAB_ID = "FlatPatternSolidTab"
+PANEL_ID = "SolidCreatePanel"
 
 _COMMAND_DESCRIPTION = "Create rectangular alignment cuts at every flat-pattern bend endpoint"
 _handlers: list[object] = []
@@ -31,7 +31,9 @@ def _cleanup_ui(ui: object) -> None:
     failures: list[str] = []
     panel = None
     try:
-        panel = dynamic_ui.allToolbarPanels.itemById(PANEL_ID)
+        tab = dynamic_ui.allToolbarTabs.itemById(TAB_ID)
+        if tab is not None:
+            panel = tab.toolbarPanels.itemById(PANEL_ID)
     except Exception as error:
         failures.append(f"toolbar panel lookup: {error}")
 
@@ -47,12 +49,6 @@ def _cleanup_ui(ui: object) -> None:
                     failures.append("command control: delete returned false")
             except Exception as error:
                 failures.append(f"command control: {error}")
-        try:
-            if not panel.deleteMe():
-                failures.append("toolbar panel: delete returned false")
-        except Exception as error:
-            failures.append(f"toolbar panel: {error}")
-
     definition = None
     try:
         definition = dynamic_ui.commandDefinitions.itemById(COMMAND_ID)
@@ -144,7 +140,8 @@ class _CommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
 def run(context: object) -> None:
     del context
     application = adsk.core.Application.get()
-    ui = cast(Any, application).userInterface
+    dynamic_application = cast(Any, application)
+    ui = dynamic_application.userInterface
     _handlers.clear()
 
     try:
@@ -164,19 +161,18 @@ def run(context: object) -> None:
         _handlers.append(created_handler)
 
         tab = ui.allToolbarTabs.itemById(TAB_ID)
-        if tab is None:
-            _cleanup_ui(ui)
-            _handlers.clear()
-            _show_message(ui, "Sheet Metal tab is unavailable.")
-            return
-
-        panel = tab.toolbarPanels.add(PANEL_ID, "Bend Marks", "", False)
+        panel = None if tab is None else tab.toolbarPanels.itemById(PANEL_ID)
         if panel is None:
-            raise RuntimeError("Could not create Bend Marks panel")
-        if panel.controls.addCommand(definition, "", False) is None:
+            raise RuntimeError("Flat Pattern Solid Create panel is unavailable")
+        control = panel.controls.addCommand(definition, "", False)
+        if control is None:
             raise RuntimeError("Could not create Bend Marks command control")
+        control.isPromoted = True
+        dynamic_application.log(f"Bend Marks registered in {TAB_ID}/{PANEL_ID}.")
     except Exception:
-        _report_startup_failure(ui, traceback.format_exc())
+        failure = traceback.format_exc()
+        dynamic_application.log(failure)
+        _report_startup_failure(ui, failure)
 
 
 def stop(context: object) -> None:

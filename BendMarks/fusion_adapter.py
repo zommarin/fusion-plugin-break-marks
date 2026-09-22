@@ -5,8 +5,8 @@ from typing import Any, cast
 import adsk.core
 import adsk.fusion
 
-from BendMarks.geometry import Point2, Rectangle, endpoint_rectangles
-from BendMarks.service import BendMarksError, BuildArtifacts, BuildResult, ExistingMarks
+from .geometry import Point2, Rectangle, endpoint_rectangles
+from .service import BendMarksError, BuildArtifacts, BuildResult, ExistingMarks
 
 ATTRIBUTE_GROUP = "fusion-plugin-bend-marks"
 SKETCH_ATTRIBUTE = "generated-sketch"

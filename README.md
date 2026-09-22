@@ -26,7 +26,7 @@ start it again after updating the add-in files. You may also enable startup load
 ## Usage
 
 1. Open an existing sheet-metal design and activate its flat pattern.
-2. On the Sheet Metal tab, open the Bend Marks panel and run **Create Bend Marks**.
+2. On the **FLAT PATTERN SOLID** tab, open the **Create** panel and run **Create Bend Marks**.
 3. Review the result message. Each supported straight bend produces two marks; unsupported curved
    bends are skipped and counted.
 

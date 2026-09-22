@@ -17,7 +17,7 @@ Prepare a sheet-metal fixture containing:
 - [ ] 1. Close the flat pattern and inspect the folded model. Confirm it has no generated bend
   marks or cutouts.
 - [ ] 2. Open the existing flat pattern. Confirm it is the active flat pattern, then run **Create
-  Bend Marks** from the Sheet Metal tab.
+  Bend Marks** from the **FLAT PATTERN SOLID** tab's **Create** panel.
 - [ ] 3. Confirm two marks exist for each straight bend. If the fixture has curved bends, confirm
   they produce no marks and the completion message reports the curved skip count.
 - [ ] 4. Measure the generated marks. Confirm width is `1.8 mm`, inset is `1 mm`, and overhang is
