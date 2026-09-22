@@ -472,9 +472,10 @@ def test_rejected_execute_handler_cleans_registration(monkeypatch: Any) -> None:
 
     created_handler.notify(SimpleNamespace(command=command))
 
-    assert ui.events == [f"delete:{command_id}" for command_id in BendMarks.COMMAND_IDS] * 2
+    assert ui.events == []
+    assert ui.messages[0].startswith("Create Bend Marks failed to create command:")
     assert "Could not register execute handler" in ui.messages[0]
-    assert BendMarks._handlers == []
+    assert len(BendMarks._handlers) == 3
 
 
 @pytest.mark.parametrize(
@@ -514,8 +515,8 @@ def test_destroy_handler_rejection_preserves_error_when_execute_rollback_fails(
     assert execute_event.remove_calls == 1
     assert "Could not register command-destroy handler" in ui.messages[0]
     assert secondary_diagnostic in ui.messages[0]
-    assert ui.events == [f"delete:{command_id}" for command_id in BendMarks.COMMAND_IDS] * 2
-    assert BendMarks._handlers == []
+    assert ui.events == []
+    assert len(BendMarks._handlers) == 3
 
 
 def test_destroy_releases_handlers_between_command_invocations(monkeypatch: Any) -> None:
@@ -715,6 +716,32 @@ def test_create_selected_builds_dialog_and_executes_captured_selection(monkeypat
     assert len(BendMarks._handlers) == 5
     command.destroy.handlers[0].notify(object())
     assert len(BendMarks._handlers) == 3
+
+
+def test_create_selected_dialog_failure_leaves_registered_commands_intact(
+    monkeypatch: Any,
+) -> None:
+    ui = FakeUI()
+    application = _application(ui)
+    monkeypatch.setattr(BendMarks.adsk.core.Application, "get", lambda: application)
+
+    def fail(_application: object) -> ParameterExpressions:
+        raise BendMarksError("bend_mark_width must be a positive length")
+
+    monkeypatch.setattr(BendMarks, "parameter_expressions", fail)
+    BendMarks._handlers.clear()
+    BendMarks.run(object())
+    definition = cast(Any, ui.commandDefinitions.itemById(BendMarks.CREATE_SELECTED_COMMAND_ID))
+
+    _create_command(definition.commandCreated.handlers[0])
+
+    panel = cast(Any, ui.panels.itemById(BendMarks.PANEL_ID))
+    assert list(ui.commandDefinitions.entities) == list(BendMarks.COMMAND_IDS)
+    assert list(panel.controls.entities) == list(BendMarks.COMMAND_IDS)
+    assert len(BendMarks._handlers) == 3
+    assert ui.events == []
+    assert ui.messages[-1].startswith("Create Selected Notches failed to create command:")
+    assert "bend_mark_width must be a positive length" in ui.messages[-1]
 
 
 @pytest.mark.parametrize(

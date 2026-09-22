@@ -25,10 +25,15 @@ from BendMarks.service import (
     CreateNotchesResult,
     CutNotchesResult,
     ParameterExpressions,
+    create_selected_notches,
 )
 
 DEFAULT_START = Point2(0, 0)
 DEFAULT_END = Point2(10, 0)
+SOURCE_A = "11111111111141118111111111111111"
+SOURCE_B = "22222222222242228222222222222222"
+SKETCH_A = "aaaaaaaaaaaa4aaa8aaaaaaaaaaaaaaa"
+SKETCH_B = "bbbbbbbbbbbb4bbb8bbbbbbbbbbbbbbb"
 
 
 class FakeAttributes:
@@ -36,11 +41,15 @@ class FakeAttributes:
         self,
         values: dict[str, str] | None = None,
         add_result: bool | Exception = True,
+        read_error: Exception | None = None,
     ) -> None:
         self.values = values or {}
         self.add_result = add_result
+        self.read_error = read_error
 
     def itemByName(self, group: str, name: str) -> object | None:
+        if self.read_error is not None:
+            raise self.read_error
         if group != ATTRIBUTE_GROUP or name not in self.values:
             return None
         return SimpleNamespace(value=self.values[name])
@@ -56,14 +65,19 @@ class FakeAttributes:
 
 
 class FakeCollection:
-    def __init__(self, items: list[object] | None = None) -> None:
+    def __init__(
+        self, items: list[object] | None = None, *, item_error: Exception | None = None
+    ) -> None:
         self.items = items or []
+        self.item_error = item_error
 
     @property
     def count(self) -> int:
         return len(self.items)
 
     def item(self, index: int) -> object:
+        if self.item_error is not None:
+            raise self.item_error
         return self.items[index]
 
 
@@ -72,6 +86,7 @@ class FakeParameter:
     _expression: str
     value: float
     unit: str = "mm"
+    assignment_error: Exception | None = None
 
     @property
     def expression(self) -> str:
@@ -79,6 +94,8 @@ class FakeParameter:
 
     @expression.setter
     def expression(self, expression: str) -> None:
+        if self.assignment_error is not None:
+            raise self.assignment_error
         self._expression = expression
         self.value = float(expression.split()[0]) / 10
 
@@ -87,11 +104,17 @@ class FakeParameter:
 class FakeUserParameters:
     parameters: dict[str, FakeParameter] = field(default_factory=dict)
     added: list[tuple[str, object, str, str]] = field(default_factory=list)
+    add_error: Exception | None = None
+    lookup_error: Exception | None = None
 
     def itemByName(self, name: str) -> FakeParameter | None:
+        if self.lookup_error is not None:
+            raise self.lookup_error
         return self.parameters.get(name)
 
     def add(self, name: str, value: object, unit: str, comment: str) -> FakeParameter:
+        if self.add_error is not None:
+            raise self.add_error
         self.added.append((name, value, unit, comment))
         parameter = FakeParameter(str(value), float(str(value).split()[0]) / 10, unit)
         self.parameters[name] = parameter
@@ -144,7 +167,11 @@ class FakeLine:
     def deleteMe(self) -> bool:
         if isinstance(self.delete_result, Exception):
             raise self.delete_result
-        self.deleted = True
+        if self.delete_result:
+            self.deleted = True
+            lines = self.parentSketch.sketchCurves.sketchLines.items
+            if self in lines:
+                lines.remove(self)
         return self.delete_result
 
 
@@ -176,7 +203,7 @@ def flat_pattern_application(
 def generated_edge(
     *,
     notch: str | None = "1",
-    source_id: str | None = "source-a",
+    source_id: str | None = SOURCE_A,
     side: str | None = "left",
 ) -> object:
     values = {}
@@ -207,7 +234,7 @@ def fake_profile(edges: list[object], *, extra_loop: bool = False) -> object:
 def prepared_cut_backend(
     *,
     profiles: list[object] | None = None,
-    sketch_id: str = "sketch-a",
+    sketch_id: str = SKETCH_A,
     cuts: list[object] | None = None,
     root_component: object | None = None,
 ) -> InteractiveCutBackend:
@@ -261,11 +288,14 @@ class FakeCut:
 
 
 class FakeObjectCollection:
-    def __init__(self, *, add_result: bool = True) -> None:
+    def __init__(self, *, add_result: bool = True, add_error: Exception | None = None) -> None:
         self.items: list[object] = []
         self.add_result = add_result
+        self.add_error = add_error
 
     def add(self, item: object) -> bool:
+        if self.add_error is not None:
+            raise self.add_error
         if not self.add_result:
             return False
         self.items.append(item)
@@ -273,11 +303,16 @@ class FakeObjectCollection:
 
 
 class FakeExtrudeInput:
-    def __init__(self, *, extent_result: bool = True) -> None:
+    def __init__(
+        self, *, extent_result: bool = True, extent_error: Exception | None = None
+    ) -> None:
         self.extent_result = extent_result
+        self.extent_error = extent_error
         self.one_side_extents: list[tuple[object, object]] = []
 
     def setOneSideExtent(self, extent: object, direction: object) -> bool:
+        if self.extent_error is not None:
+            raise self.extent_error
         self.one_side_extents.append((extent, direction))
         return self.extent_result
 
@@ -289,17 +324,26 @@ class FakeExtrudes:
         input_result: object = True,
         extent_result: bool = True,
         cut: FakeCut | None = None,
+        add_error: Exception | None = None,
+        input_error: Exception | None = None,
+        extent_error: Exception | None = None,
     ) -> None:
-        self.input = FakeExtrudeInput(extent_result=extent_result)
+        self.input = FakeExtrudeInput(extent_result=extent_result, extent_error=extent_error)
         self.input_result = input_result
         self.cut: FakeCut | None = cut or FakeCut()
         self.create_arguments: tuple[object, object] | None = None
+        self.add_error = add_error
+        self.input_error = input_error
 
     def createInput(self, profiles: object, operation: object) -> object | None:
+        if self.input_error is not None:
+            raise self.input_error
         self.create_arguments = (profiles, operation)
         return self.input if self.input_result else None
 
     def add(self, _extrude_input: object) -> FakeCut | None:
+        if self.add_error is not None:
+            raise self.add_error
         return self.cut
 
 
@@ -311,10 +355,16 @@ def prepared_cut_backend_with_extrudes(
     input_result: object = True,
     extent_result: bool = True,
     cut: FakeCut | None = None,
+    collection_add_error: Exception | None = None,
+    extrude_add_error: Exception | None = None,
+    extrude_input_error: Exception | None = None,
+    extent_error: Exception | None = None,
 ) -> tuple[InteractiveCutBackend, FakeExtrudes]:
     monkeypatch.setattr(
         "BendMarks.interactive_adapter.adsk.core.ObjectCollection.create",
-        lambda: FakeObjectCollection(add_result=collection_add_result),
+        lambda: FakeObjectCollection(
+            add_result=collection_add_result, add_error=collection_add_error
+        ),
     )
     monkeypatch.setattr(
         "BendMarks.interactive_adapter.adsk.fusion.ThroughAllExtentDefinition.create",
@@ -324,6 +374,9 @@ def prepared_cut_backend_with_extrudes(
         input_result=input_result,
         extent_result=extent_result,
         cut=cut,
+        add_error=extrude_add_error,
+        input_error=extrude_input_error,
+        extent_error=extent_error,
     )
     root_component = SimpleNamespace(features=SimpleNamespace(extrudeFeatures=extrudes))
     profiles = [fake_profile([generated_edge() for _ in range(4)]) for _ in range(profile_count)]
@@ -372,14 +425,25 @@ def test_cut_prepare_requires_valid_sketch_id(sketch_id: str | None) -> None:
         ).prepare()
 
 
+def test_cut_prepare_rejects_malformed_sketch_id() -> None:
+    root_component = object()
+    sketch = FakeSketch(root_component)
+    sketch.attributes.values[SKETCH_ID_ATTRIBUTE] = "not-a-generated-id"
+
+    with pytest.raises(BendMarksError, match="malformed generated notch sketch ID"):
+        InteractiveCutBackend(
+            flat_pattern_application(root_component=root_component, active_edit_object=sketch)
+        ).prepare()
+
+
 def test_profile_discovery_accepts_only_fully_tagged_boundaries() -> None:
     valid = fake_profile([generated_edge() for _ in range(4)])
     unrelated = fake_profile([untagged_edge() for _ in range(4)])
     incomplete = fake_profile([generated_edge() for _ in range(3)] + [untagged_edge()])
     mixed_sources = fake_profile(
         [
-            generated_edge(source_id="a"),
-            generated_edge(source_id="b"),
+            generated_edge(source_id=SOURCE_A),
+            generated_edge(source_id=SOURCE_B),
             generated_edge(),
             generated_edge(),
         ]
@@ -445,11 +509,23 @@ def test_profile_discovery_rejects_no_generated_profiles() -> None:
         backend.discover_profiles()
 
 
+def test_profile_discovery_wraps_profile_iteration_exception() -> None:
+    backend = prepared_cut_backend(profiles=[fake_profile([generated_edge() for _ in range(4)])])
+    cast(Any, backend.sketch).profiles.item_error = RuntimeError("profiles exploded")
+
+    with pytest.raises(
+        BendMarksError, match="Could not inspect generated notch profiles"
+    ) as raised:
+        backend.discover_profiles()
+
+    assert isinstance(raised.value.__cause__, RuntimeError)
+
+
 def test_find_existing_cut_filters_by_active_sketch_id() -> None:
-    matching = FakeCut(attribute_value="sketch-a")
-    other = FakeCut(attribute_value="sketch-b")
-    invalid = FakeCut(attribute_value="sketch-a", valid=False)
-    wrong_type = FakeCut(attribute_value="sketch-a")
+    matching = FakeCut(attribute_value=SKETCH_A)
+    other = FakeCut(attribute_value=SKETCH_B)
+    invalid = FakeCut(attribute_value=SKETCH_A, valid=False)
+    wrong_type = FakeCut(attribute_value=SKETCH_A)
     wrong_type.objectType = "adsk::fusion::Sketch"
     backend = prepared_cut_backend(cuts=[matching, other, invalid, wrong_type])
 
@@ -458,11 +534,27 @@ def test_find_existing_cut_filters_by_active_sketch_id() -> None:
 
 def test_find_existing_cut_rejects_duplicate_matching_cuts() -> None:
     backend = prepared_cut_backend(
-        cuts=[FakeCut(attribute_value="sketch-a"), FakeCut(attribute_value="sketch-a")]
+        cuts=[FakeCut(attribute_value=SKETCH_A), FakeCut(attribute_value=SKETCH_A)]
     )
 
     with pytest.raises(BendMarksError, match="multiple interactive cuts"):
         backend.find_existing_cut()
+
+
+def test_find_existing_cut_wraps_attribute_lookup_exception() -> None:
+    backend = prepared_cut_backend()
+
+    def fail(_group: str, _name: str) -> object:
+        raise RuntimeError("cut attributes exploded")
+
+    cast(Any, backend.product).findAttributes = fail
+
+    with pytest.raises(
+        BendMarksError, match="Could not inspect interactive cut ownership"
+    ) as raised:
+        backend.find_existing_cut()
+
+    assert isinstance(raised.value.__cause__, RuntimeError)
 
 
 def test_build_cuts_discovered_profiles_through_all(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -488,6 +580,17 @@ def test_build_rejects_profile_collection_add_failure(monkeypatch: pytest.Monkey
         backend.build()
 
 
+def test_build_wraps_profile_collection_exception(monkeypatch: pytest.MonkeyPatch) -> None:
+    backend, _ = prepared_cut_backend_with_extrudes(
+        monkeypatch, collection_add_error=RuntimeError("collection exploded")
+    )
+
+    with pytest.raises(BendMarksError, match="Could not collect generated notch profile") as raised:
+        backend.build()
+
+    assert isinstance(raised.value.__cause__, RuntimeError)
+
+
 def test_build_rejects_null_extrude_input(monkeypatch: pytest.MonkeyPatch) -> None:
     backend, _ = prepared_cut_backend_with_extrudes(monkeypatch, input_result=None)
 
@@ -495,11 +598,53 @@ def test_build_rejects_null_extrude_input(monkeypatch: pytest.MonkeyPatch) -> No
         backend.build()
 
 
+def test_build_wraps_extrude_input_exception(monkeypatch: pytest.MonkeyPatch) -> None:
+    backend, _ = prepared_cut_backend_with_extrudes(
+        monkeypatch, extrude_input_error=RuntimeError("input exploded")
+    )
+
+    with pytest.raises(BendMarksError, match="Could not create interactive cut input") as raised:
+        backend.build()
+
+    assert isinstance(raised.value.__cause__, RuntimeError)
+
+
 def test_build_rejects_through_all_extent_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     backend, _ = prepared_cut_backend_with_extrudes(monkeypatch, extent_result=False)
 
     with pytest.raises(BendMarksError, match="Could not set interactive cut to through-all"):
         backend.build()
+
+
+def test_build_wraps_extent_creation_exception(monkeypatch: pytest.MonkeyPatch) -> None:
+    backend, _ = prepared_cut_backend_with_extrudes(monkeypatch)
+
+    def fail() -> object:
+        raise RuntimeError("extent exploded")
+
+    monkeypatch.setattr(
+        "BendMarks.interactive_adapter.adsk.fusion.ThroughAllExtentDefinition.create", fail
+    )
+
+    with pytest.raises(
+        BendMarksError, match="Could not set interactive cut to through-all"
+    ) as raised:
+        backend.build()
+
+    assert isinstance(raised.value.__cause__, RuntimeError)
+
+
+def test_build_wraps_extent_assignment_exception(monkeypatch: pytest.MonkeyPatch) -> None:
+    backend, _ = prepared_cut_backend_with_extrudes(
+        monkeypatch, extent_error=RuntimeError("extent assignment exploded")
+    )
+
+    with pytest.raises(
+        BendMarksError, match="Could not set interactive cut to through-all"
+    ) as raised:
+        backend.build()
+
+    assert isinstance(raised.value.__cause__, RuntimeError)
 
 
 def test_build_rejects_null_cut(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -510,6 +655,17 @@ def test_build_rejects_null_cut(monkeypatch: pytest.MonkeyPatch) -> None:
         backend.build()
 
 
+def test_build_wraps_extrusion_creation_exception(monkeypatch: pytest.MonkeyPatch) -> None:
+    backend, _ = prepared_cut_backend_with_extrudes(
+        monkeypatch, extrude_add_error=RuntimeError("extrude exploded")
+    )
+
+    with pytest.raises(BendMarksError, match="Could not create interactive cut") as raised:
+        backend.build()
+
+    assert isinstance(raised.value.__cause__, RuntimeError)
+
+
 def test_build_tag_failure_deletes_partial_cut(monkeypatch: pytest.MonkeyPatch) -> None:
     cut = FakeCut(attribute_result=False)
     backend, _ = prepared_cut_backend_with_extrudes(monkeypatch, cut=cut)
@@ -518,6 +674,24 @@ def test_build_tag_failure_deletes_partial_cut(monkeypatch: pytest.MonkeyPatch) 
         backend.build()
 
     assert cut.deleted
+
+
+def test_build_preserves_tag_failure_cause_and_cleanup_note(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cut = FakeCut(
+        attribute_result=RuntimeError("tag exploded"),
+        delete_result=RuntimeError("cleanup exploded"),
+    )
+    backend, _ = prepared_cut_backend_with_extrudes(monkeypatch, cut=cut)
+
+    with pytest.raises(
+        BendMarksError, match=f"Could not set {INTERACTIVE_CUT_ATTRIBUTE}"
+    ) as raised:
+        backend.build()
+
+    assert isinstance(raised.value.__cause__, RuntimeError)
+    assert raised.value.__notes__ == ["Partial interactive cut cleanup failed: cleanup exploded"]
 
 
 def test_interactive_cut_suppression_assignment_is_verified() -> None:
@@ -661,6 +835,24 @@ def test_update_parameters_creates_missing_from_entered_expressions(
     ]
 
 
+def test_update_parameters_wraps_creation_exception(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "BendMarks.interactive_adapter.adsk.core.ValueInput.createByString", lambda value: value
+    )
+    line = fake_line()
+    root = object()
+    line.parentSketch.parentComponent = root
+    application = flat_pattern_application(root_component=root)
+    cast(Any, application).activeProduct.userParameters.add_error = RuntimeError("add exploded")
+    backend = InteractiveNotchBackend(application, (line,))
+    backend.prepare()
+
+    with pytest.raises(BendMarksError, match="Could not create bend_mark_width") as raised:
+        backend.update_parameters(ParameterExpressions("2 mm", "0.8 mm", "1.2 mm"))
+
+    assert isinstance(raised.value.__cause__, RuntimeError)
+
+
 def test_update_parameters_assigns_existing_expressions() -> None:
     parameters = {
         "bend_mark_width": FakeParameter("1 mm", 0.1),
@@ -682,6 +874,102 @@ def test_update_parameters_assigns_existing_expressions() -> None:
         "0.8 mm",
         "1.2 mm",
     ]
+
+
+def test_update_parameters_wraps_assignment_exception() -> None:
+    parameters = {
+        "bend_mark_width": FakeParameter(
+            "1 mm", 0.1, assignment_error=RuntimeError("assignment exploded")
+        )
+    }
+    line = fake_line()
+    root = object()
+    line.parentSketch.parentComponent = root
+    backend = InteractiveNotchBackend(
+        flat_pattern_application(parameters=parameters, root_component=root), (line,)
+    )
+    backend.prepare()
+
+    with pytest.raises(BendMarksError, match="Could not update bend_mark_width") as raised:
+        backend.update_parameters(ParameterExpressions("2 mm", "0.8 mm", "1.2 mm"))
+
+    assert isinstance(raised.value.__cause__, RuntimeError)
+
+
+def test_update_parameters_wraps_parameter_lookup_exception() -> None:
+    line = fake_line()
+    root = object()
+    line.parentSketch.parentComponent = root
+    application = flat_pattern_application(root_component=root)
+    cast(Any, application).activeProduct.userParameters.lookup_error = RuntimeError(
+        "lookup exploded"
+    )
+    backend = InteractiveNotchBackend(application, (line,))
+    backend.prepare()
+
+    with pytest.raises(BendMarksError, match="Could not access bend_mark_width") as raised:
+        backend.update_parameters(ParameterExpressions("2 mm", "0.8 mm", "1.2 mm"))
+
+    assert isinstance(raised.value.__cause__, RuntimeError)
+
+
+@pytest.mark.parametrize("source_id", ["", "not-a-generated-id"], ids=["empty", "malformed"])
+def test_prepare_rejects_invalid_source_id_before_mutation(source_id: str) -> None:
+    line = fake_line(source_id=source_id)
+    root = object()
+    line.parentSketch.parentComponent = root
+    parameters = {"bend_mark_width": FakeParameter("1 mm", 0.1)}
+    backend = InteractiveNotchBackend(
+        flat_pattern_application(parameters=parameters, root_component=root), (line,)
+    )
+
+    with pytest.raises(BendMarksError, match="invalid interactive source ID"):
+        backend.prepare()
+
+    assert parameters["bend_mark_width"].expression == "1 mm"
+    assert attribute_value(line, SOURCE_ID_ATTRIBUTE) == source_id
+
+
+@pytest.mark.parametrize("sketch_id", ["", "not-a-generated-id"], ids=["empty", "malformed"])
+def test_prepare_rejects_invalid_sketch_id_before_mutation(sketch_id: str) -> None:
+    sketch = FakeSketch()
+    sketch.attributes.values[SKETCH_ID_ATTRIBUTE] = sketch_id
+    line = fake_line(parent_sketch=sketch)
+    root = object()
+    sketch.parentComponent = root
+    backend = InteractiveNotchBackend(flat_pattern_application(root_component=root), (line,))
+
+    with pytest.raises(BendMarksError, match="invalid interactive sketch ID"):
+        backend.prepare()
+
+    assert attribute_value(sketch, SKETCH_ID_ATTRIBUTE) == sketch_id
+    assert attribute_value(line, SOURCE_ID_ATTRIBUTE) is None
+
+
+def test_prepare_wraps_attribute_read_exception() -> None:
+    line = fake_line()
+    line.attributes.read_error = RuntimeError("attribute exploded")
+    root = object()
+    line.parentSketch.parentComponent = root
+    backend = InteractiveNotchBackend(flat_pattern_application(root_component=root), (line,))
+
+    with pytest.raises(BendMarksError, match="Could not read interactive-source-id") as raised:
+        backend.prepare()
+
+    assert isinstance(raised.value.__cause__, RuntimeError)
+
+
+def test_find_existing_geometry_wraps_attribute_add_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    line = fake_line()
+    line.attributes.add_result = RuntimeError("attribute add exploded")
+    backend, _ = prepared_backend(monkeypatch, (line,))
+
+    with pytest.raises(BendMarksError, match="Could not set interactive-source-id") as raised:
+        backend.find_existing_geometry()
+
+    assert isinstance(raised.value.__cause__, RuntimeError)
 
 
 def test_build_converts_lines_and_tags_generated_geometry(
@@ -722,27 +1010,29 @@ def test_build_creates_only_selected_side(
     assert {attribute_value(item, GEOMETRY_SIDE_ATTRIBUTE) for item in generated} == {expected_side}
 
 
-def test_build_rejects_duplicate_source_ids(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_prepare_rejects_duplicate_source_ids() -> None:
     sketch = FakeSketch()
-    first = fake_line(parent_sketch=sketch, source_id="duplicate")
-    fake_line(parent_sketch=sketch, source_id="duplicate")
-    backend, _ = prepared_backend(monkeypatch, (first,))
+    first = fake_line(parent_sketch=sketch, source_id=SOURCE_A)
+    fake_line(parent_sketch=sketch, source_id=SOURCE_A)
+    root = object()
+    sketch.parentComponent = root
+    backend = InteractiveNotchBackend(flat_pattern_application(root_component=root), (first,))
 
     with pytest.raises(BendMarksError, match="duplicate"):
-        backend.build(NotchSide.BOTH)
+        backend.prepare()
 
 
 def test_find_existing_geometry_returns_only_selected_sources(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     sketch = FakeSketch()
-    selected = fake_line(source_id="selected", parent_sketch=sketch)
-    other = fake_line(source_id="other", parent_sketch=sketch)
+    selected = fake_line(source_id=SOURCE_A, parent_sketch=sketch)
+    other = fake_line(source_id=SOURCE_B, parent_sketch=sketch)
     selected_geometry = fake_line(
-        generated_source="selected", generated_side="left", parent_sketch=sketch
+        generated_source=SOURCE_A, generated_side="left", parent_sketch=sketch
     )
     other_geometry = fake_line(
-        generated_source="other", generated_side="right", parent_sketch=sketch
+        generated_source=SOURCE_B, generated_side="right", parent_sketch=sketch
     )
     backend, _ = prepared_backend(monkeypatch, (selected,))
 
@@ -755,8 +1045,8 @@ def test_find_existing_geometry_rejects_malformed_side(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     sketch = FakeSketch()
-    selected = fake_line(source_id="selected", parent_sketch=sketch)
-    fake_line(generated_source="selected", generated_side="center", parent_sketch=sketch)
+    selected = fake_line(source_id=SOURCE_A, parent_sketch=sketch)
+    fake_line(generated_source=SOURCE_A, generated_side="center", parent_sketch=sketch)
     backend, _ = prepared_backend(monkeypatch, (selected,))
 
     with pytest.raises(BendMarksError, match="side"):
@@ -780,3 +1070,42 @@ def test_delete_geometry_propagates_failures(
         backend.delete_geometry((generated, remaining))
 
     assert remaining.deleted
+
+
+def test_rerun_both_to_left_removes_right_and_preserves_other_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sketch = FakeSketch()
+    selected = fake_line(source_id=SOURCE_A, parent_sketch=sketch)
+    other = fake_line(source_id=SOURCE_B, parent_sketch=sketch)
+    backend, _ = prepared_backend(monkeypatch, (selected, other))
+    backend.build(NotchSide.BOTH)
+    rerun = InteractiveNotchBackend(backend.application, (selected,))
+    rerun.prepare()
+
+    create_selected_notches(
+        rerun,
+        ParameterExpressions("2 mm", "0.8 mm", "1.2 mm"),
+        NotchSide.LEFT,
+    )
+
+    generated = [
+        line
+        for line in sketch.sketchCurves.sketchLines.items
+        if attribute_value(line, GEOMETRY_SOURCE_ATTRIBUTE) is not None
+    ]
+    selected_geometry = [
+        line for line in generated if attribute_value(line, GEOMETRY_SOURCE_ATTRIBUTE) == SOURCE_A
+    ]
+    other_geometry = [
+        line for line in generated if attribute_value(line, GEOMETRY_SOURCE_ATTRIBUTE) == SOURCE_B
+    ]
+    assert len(selected_geometry) == 6
+    assert {attribute_value(line, GEOMETRY_SIDE_ATTRIBUTE) for line in selected_geometry} == {
+        "left"
+    }
+    assert len(other_geometry) == 12
+    assert {attribute_value(line, GEOMETRY_SIDE_ATTRIBUTE) for line in other_geometry} == {
+        "left",
+        "right",
+    }

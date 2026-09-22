@@ -116,6 +116,10 @@ def _report_startup_failure(ui: object, failure: str) -> None:
     _show_message(ui, f"Create Bend Marks failed to start:\n{failure}")
 
 
+def _report_command_creation_failure(ui: object, command_name: str, failure: str) -> None:
+    _show_message(ui, f"{command_name} failed to create command:\n{failure}")
+
+
 class _ExecuteHandler(adsk.core.CommandEventHandler):
     def __init__(
         self, application: object, parameter_inputs: dict[str, object] | None = None
@@ -201,7 +205,7 @@ class _CommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
             _retain_command_handlers(command, execute_handler)
         except Exception:
             ui = cast(Any, self.application).userInterface
-            _report_startup_failure(ui, traceback.format_exc())
+            _report_command_creation_failure(ui, COMMAND_NAME, traceback.format_exc())
 
 
 class _CreateSelectedExecuteHandler(adsk.core.CommandEventHandler):
@@ -291,7 +295,7 @@ class _CreateSelectedCommandCreatedHandler(adsk.core.CommandCreatedEventHandler)
             _retain_command_handlers(command, execute_handler)
         except Exception:
             ui = cast(Any, self.application).userInterface
-            _report_startup_failure(ui, traceback.format_exc())
+            _report_command_creation_failure(ui, "Create Selected Notches", traceback.format_exc())
 
 
 class _CutSelectedExecuteHandler(adsk.core.CommandEventHandler):
@@ -326,7 +330,7 @@ class _CutSelectedCommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
             _retain_command_handlers(command, execute_handler)
         except Exception:
             ui = cast(Any, self.application).userInterface
-            _report_startup_failure(ui, traceback.format_exc())
+            _report_command_creation_failure(ui, "Cut Selected Notches", traceback.format_exc())
 
 
 def run(context: object) -> None:

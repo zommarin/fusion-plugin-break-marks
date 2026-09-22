@@ -23,15 +23,50 @@ INTERACTIVE_CUT_ATTRIBUTE = "interactive-cut-sketch"
 
 
 def _attribute_value(entity: object, name: str) -> str | None:
-    attribute = cast(Any, entity).attributes.itemByName(ATTRIBUTE_GROUP, name)
-    if attribute is None:
-        return None
-    return cast(str, attribute.value)
+    try:
+        attribute = cast(Any, entity).attributes.itemByName(ATTRIBUTE_GROUP, name)
+        if attribute is None:
+            return None
+        return cast(str, attribute.value)
+    except Exception as error:
+        raise BendMarksError(f"Could not read {name}") from error
+
+
+def _validate_id(value: object, context: str) -> str:
+    if not isinstance(value, str):
+        raise BendMarksError(f"Found invalid {context}")
+    try:
+        parsed = uuid.UUID(value)
+    except (ValueError, AttributeError) as error:
+        raise BendMarksError(f"Found invalid {context}") from error
+    if parsed.hex != value:
+        raise BendMarksError(f"Found invalid {context}")
+    return value
 
 
 def _set_attribute(entity: object, name: str, value: str) -> None:
-    if not cast(Any, entity).attributes.add(ATTRIBUTE_GROUP, name, value):
-        raise BendMarksError(f"Could not set {name}")
+    try:
+        if not cast(Any, entity).attributes.add(ATTRIBUTE_GROUP, name, value):
+            raise BendMarksError(f"Could not set {name}")
+    except BendMarksError:
+        raise
+    except Exception as error:
+        raise BendMarksError(f"Could not set {name}") from error
+
+
+def _validate_persisted_ownership(sketch: object) -> list[str]:
+    source_ids: list[str] = []
+    for line in _collection_items(cast(Any, sketch).sketchCurves.sketchLines):
+        value = _attribute_value(line, SOURCE_ID_ATTRIBUTE)
+        if value is not None:
+            source_ids.append(_validate_id(value, "interactive source ID"))
+    if len(source_ids) != len(set(source_ids)):
+        raise BendMarksError("Found duplicate interactive source IDs")
+
+    sketch_id = _attribute_value(sketch, SKETCH_ID_ATTRIBUTE)
+    if sketch_id is not None:
+        _validate_id(sketch_id, "interactive sketch ID")
+    return source_ids
 
 
 def parameter_expressions(application: object) -> ParameterExpressions:
@@ -76,6 +111,8 @@ class InteractiveNotchBackend:
         if sketch.parentComponent is not product.rootComponent:
             raise BendMarksError("Selected sketch must belong to the active flat pattern")
 
+        _validate_persisted_ownership(sketch)
+
         self.product = product
         self.sketch = sketch
         self.lines = self.selected_entities
@@ -84,35 +121,43 @@ class InteractiveNotchBackend:
         user_parameters = cast(Any, self.product).userParameters
         entered = (expressions.width, expressions.inset, expressions.overhang)
         for (name, _, comment), expression in zip(PARAMETERS, entered, strict=True):
-            parameter = user_parameters.itemByName(name)
+            try:
+                parameter = user_parameters.itemByName(name)
+            except Exception as error:
+                raise BendMarksError(f"Could not access {name}") from error
             if parameter is None:
-                value = adsk.core.ValueInput.createByString(expression)
-                parameter = user_parameters.add(name, value, "mm", comment)
+                try:
+                    value = adsk.core.ValueInput.createByString(expression)
+                    parameter = user_parameters.add(name, value, "mm", comment)
+                except Exception as error:
+                    raise BendMarksError(f"Could not create {name}") from error
                 if parameter is None:
                     raise BendMarksError(f"Could not create {name}")
             else:
-                parameter.expression = expression
+                try:
+                    parameter.expression = expression
+                except Exception as error:
+                    raise BendMarksError(f"Could not update {name}") from error
             validate_parameter(name, parameter)
 
     def _ensure_ownership(self) -> tuple[str, ...]:
         sketch = cast(Any, self.sketch)
-        source_ids = [
-            value
-            for line in _collection_items(sketch.sketchCurves.sketchLines)
-            if (value := _attribute_value(line, SOURCE_ID_ATTRIBUTE))
-        ]
-        if len(source_ids) != len(set(source_ids)):
-            raise BendMarksError("Found duplicate interactive source IDs")
+        _validate_persisted_ownership(sketch)
 
-        if not _attribute_value(sketch, SKETCH_ID_ATTRIBUTE):
+        sketch_id = _attribute_value(sketch, SKETCH_ID_ATTRIBUTE)
+        if sketch_id is None:
             _set_attribute(sketch, SKETCH_ID_ATTRIBUTE, uuid.uuid4().hex)
+        else:
+            _validate_id(sketch_id, "interactive sketch ID")
 
         selected_ids: list[str] = []
         for line in self.lines:
             source_id = _attribute_value(line, SOURCE_ID_ATTRIBUTE)
-            if not source_id:
+            if source_id is None:
                 source_id = uuid.uuid4().hex
                 _set_attribute(line, SOURCE_ID_ATTRIBUTE, source_id)
+            else:
+                source_id = _validate_id(source_id, "interactive source ID")
             selected_ids.append(source_id)
         return tuple(selected_ids)
 
@@ -122,6 +167,8 @@ class InteractiveNotchBackend:
         sketch_lines = cast(Any, self.sketch).sketchCurves.sketchLines
         for line in _collection_items(sketch_lines):
             source_id = _attribute_value(line, GEOMETRY_SOURCE_ATTRIBUTE)
+            if source_id is not None:
+                source_id = _validate_id(source_id, "interactive geometry source ID")
             if source_id not in selected_ids:
                 continue
             side = _attribute_value(line, GEOMETRY_SIDE_ATTRIBUTE)
@@ -227,8 +274,12 @@ class InteractiveCutBackend:
             raise BendMarksError("Active sketch must belong to the active flat pattern")
 
         sketch_id = _attribute_value(sketch, SKETCH_ID_ATTRIBUTE)
-        if not sketch_id:
+        if sketch_id is None or sketch_id == "":
             raise BendMarksError("Active sketch has no valid generated notch sketch ID")
+        try:
+            sketch_id = _validate_id(sketch_id, "generated notch sketch ID")
+        except BendMarksError as error:
+            raise BendMarksError("Active sketch has malformed generated notch sketch ID") from error
 
         self.product = product
         self.sketch = sketch
@@ -236,10 +287,24 @@ class InteractiveCutBackend:
 
     def discover_profiles(self) -> tuple[object, ...]:
         discovered: list[object] = []
-        for profile in _collection_items(cast(Any, self.sketch).profiles):
-            loops = _collection_items(cast(Any, profile).profileLoops)
-            loop_curves = tuple(_collection_items(cast(Any, loop).profileCurves) for loop in loops)
-            entities = [cast(Any, curve).sketchEntity for curves in loop_curves for curve in curves]
+        try:
+            profiles = _collection_items(cast(Any, self.sketch).profiles)
+            profile_data = []
+            for profile in profiles:
+                loops = _collection_items(cast(Any, profile).profileLoops)
+                loop_curves = tuple(
+                    _collection_items(cast(Any, loop).profileCurves) for loop in loops
+                )
+                entities = [
+                    cast(Any, curve).sketchEntity for curves in loop_curves for curve in curves
+                ]
+                profile_data.append((profile, loops, loop_curves, entities))
+        except BendMarksError:
+            raise
+        except Exception as error:
+            raise BendMarksError("Could not inspect generated notch profiles") from error
+
+        for profile, loops, loop_curves, entities in profile_data:
             if len(loops) != 1:
                 metadata_names = (
                     NOTCH_EDGE_ATTRIBUTE,
@@ -275,7 +340,13 @@ class InteractiveCutBackend:
                 side not in (NotchSide.LEFT.value, NotchSide.RIGHT.value) for side in sides
             ):
                 raise BendMarksError("Profile has invalid generated notch metadata")
-            if len(set(source_ids)) != 1 or len(set(sides)) != 1:
+            try:
+                validated_source_ids = [
+                    _validate_id(source_id, "generated notch source ID") for source_id in source_ids
+                ]
+            except BendMarksError as error:
+                raise BendMarksError("Profile has invalid generated notch metadata") from error
+            if len(set(validated_source_ids)) != 1 or len(set(sides)) != 1:
                 continue
             discovered.append(profile)
 
@@ -285,43 +356,72 @@ class InteractiveCutBackend:
 
     def find_existing_cut(self) -> object | None:
         cut_type = adsk.fusion.ExtrudeFeature.classType() or "adsk::fusion::ExtrudeFeature"
-        attributes = cast(Any, self.product).findAttributes(
-            ATTRIBUTE_GROUP, INTERACTIVE_CUT_ATTRIBUTE
-        )
         matches: list[object] = []
-        for attribute in _collection_items(attributes):
-            dynamic_attribute = cast(Any, attribute)
-            parent = dynamic_attribute.parent
-            if (
-                dynamic_attribute.value == self.sketch_id
-                and getattr(parent, "isValid", False)
-                and getattr(parent, "objectType", None) == cut_type
-            ):
-                matches.append(parent)
+        try:
+            attributes = cast(Any, self.product).findAttributes(
+                ATTRIBUTE_GROUP, INTERACTIVE_CUT_ATTRIBUTE
+            )
+            for attribute in _collection_items(attributes):
+                dynamic_attribute = cast(Any, attribute)
+                parent = dynamic_attribute.parent
+                value = dynamic_attribute.value
+                if value is not None:
+                    try:
+                        value = _validate_id(value, "interactive cut sketch ID")
+                    except BendMarksError as error:
+                        raise BendMarksError(
+                            "Interactive cut has invalid sketch ownership"
+                        ) from error
+                if (
+                    value == self.sketch_id
+                    and getattr(parent, "isValid", False)
+                    and getattr(parent, "objectType", None) == cut_type
+                ):
+                    matches.append(parent)
+        except BendMarksError:
+            raise
+        except Exception as error:
+            raise BendMarksError("Could not inspect interactive cut ownership") from error
         if len(matches) > 1:
             raise BendMarksError("Found multiple interactive cuts for the active sketch")
         return matches[0] if matches else None
 
     def build(self) -> CutNotchesResult:
         discovered = self.discover_profiles()
-        profiles = cast(Any, adsk.core.ObjectCollection.create())
+        try:
+            profiles = cast(Any, adsk.core.ObjectCollection.create())
+        except Exception as error:
+            raise BendMarksError("Could not create generated notch profile collection") from error
         if profiles is None:
             raise BendMarksError("Could not create generated notch profile collection")
         for profile in discovered:
-            if not profiles.add(profile):
-                raise BendMarksError("Could not collect generated notch profile")
+            try:
+                if not profiles.add(profile):
+                    raise BendMarksError("Could not collect generated notch profile")
+            except BendMarksError:
+                raise
+            except Exception as error:
+                raise BendMarksError("Could not collect generated notch profile") from error
 
-        extrudes = cast(Any, self.product).rootComponent.features.extrudeFeatures
-        extrude_input = extrudes.createInput(
-            profiles, adsk.fusion.FeatureOperations.CutFeatureOperation
-        )
+        try:
+            extrudes = cast(Any, self.product).rootComponent.features.extrudeFeatures
+            extrude_input = extrudes.createInput(
+                profiles, adsk.fusion.FeatureOperations.CutFeatureOperation
+            )
+        except Exception as error:
+            raise BendMarksError("Could not create interactive cut input") from error
         if extrude_input is None:
             raise BendMarksError("Could not create interactive cut input")
-        through_all = adsk.fusion.ThroughAllExtentDefinition.create()
-        if through_all is None or not extrude_input.setOneSideExtent(
-            through_all, adsk.fusion.ExtentDirections.NegativeExtentDirection
-        ):
-            raise BendMarksError("Could not set interactive cut to through-all")
+        try:
+            through_all = adsk.fusion.ThroughAllExtentDefinition.create()
+            if through_all is None or not extrude_input.setOneSideExtent(
+                through_all, adsk.fusion.ExtentDirections.NegativeExtentDirection
+            ):
+                raise BendMarksError("Could not set interactive cut to through-all")
+        except BendMarksError:
+            raise
+        except Exception as error:
+            raise BendMarksError("Could not set interactive cut to through-all") from error
 
         cut: Any = None
         try:
@@ -331,15 +431,22 @@ class InteractiveCutBackend:
             cut.name = "Selected Notches Cut"
             _set_attribute(cut, INTERACTIVE_CUT_ATTRIBUTE, self.sketch_id)
         except Exception as error:
+            failure = (
+                error
+                if isinstance(error, BendMarksError)
+                else BendMarksError("Could not create interactive cut")
+            )
             if cut is not None:
                 try:
                     if not cut.deleteMe():
-                        error.add_note(
+                        failure.add_note(
                             "Partial interactive cut cleanup failed: delete returned false"
                         )
                 except Exception as cleanup_error:
-                    error.add_note(f"Partial interactive cut cleanup failed: {cleanup_error}")
-            raise
+                    failure.add_note(f"Partial interactive cut cleanup failed: {cleanup_error}")
+            if failure is error:
+                raise
+            raise failure from error
         return CutNotchesResult(len(discovered))
 
     def set_cut_suppressed(self, cut: object, suppressed: bool) -> None:
