@@ -2,7 +2,13 @@ from math import sqrt
 
 import pytest
 
-from BendMarks.geometry import DegenerateBendError, Point2, endpoint_rectangles
+from BendMarks.geometry import (
+    DegenerateBendError,
+    NotchSide,
+    Point2,
+    endpoint_rectangles,
+    selected_endpoint_rectangles,
+)
 
 
 def test_horizontal_bend_creates_outward_and_inward_extents() -> None:
@@ -47,3 +53,38 @@ def test_reversing_bend_preserves_physical_rectangles() -> None:
 def test_zero_length_bend_is_rejected() -> None:
     with pytest.raises(DegenerateBendError, match="zero length"):
         endpoint_rectangles(Point2(4, 4), Point2(4, 4), 2, 1, 1)
+
+
+@pytest.mark.parametrize(
+    ("start", "end", "expected_left"),
+    [
+        (Point2(10, 2), Point2(0, 2), Point2(0, 2)),
+        (Point2(4, 9), Point2(4, -1), Point2(4, -1)),
+    ],
+)
+def test_left_endpoint_uses_x_then_y_order(
+    start: Point2, end: Point2, expected_left: Point2
+) -> None:
+    selected = selected_endpoint_rectangles(start, end, 2, 1, 1, NotchSide.LEFT)
+
+    assert len(selected) == 1
+    assert selected[0].side is NotchSide.LEFT
+    assert selected[0].rectangle.outer_midpoint in {
+        Point2(expected_left.x - 1, expected_left.y),
+        Point2(expected_left.x, expected_left.y - 1),
+    }
+
+
+def test_both_returns_stable_left_then_right_order() -> None:
+    selected = selected_endpoint_rectangles(Point2(10, 0), Point2(0, 0), 2, 1, 1, NotchSide.BOTH)
+
+    assert [item.side for item in selected] == [NotchSide.LEFT, NotchSide.RIGHT]
+    assert [item.rectangle.outer_midpoint.x for item in selected] == [-1, 11]
+
+
+def test_right_returns_only_right_rectangle() -> None:
+    selected = selected_endpoint_rectangles(Point2(0, 0), Point2(10, 0), 2, 1, 1, NotchSide.RIGHT)
+
+    assert len(selected) == 1
+    assert selected[0].side is NotchSide.RIGHT
+    assert selected[0].rectangle.outer_midpoint == Point2(11, 0)

@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
 from math import hypot
 
 
 class DegenerateBendError(ValueError):
     pass
+
+
+class NotchSide(StrEnum):
+    BOTH = "both"
+    LEFT = "left"
+    RIGHT = "right"
 
 
 @dataclass(frozen=True)
@@ -41,6 +48,12 @@ class Rectangle:
     def width(self) -> float:
         first, second, _, _ = self.corners
         return hypot(second.x - first.x, second.y - first.y)
+
+
+@dataclass(frozen=True)
+class EndpointRectangle:
+    side: NotchSide
+    rectangle: Rectangle
 
 
 def _rectangle_at(
@@ -80,3 +93,25 @@ def endpoint_rectangles(
         _rectangle_at(start, inward, width, inset, overhang),
         _rectangle_at(end, inward.scaled(-1), width, inset, overhang),
     )
+
+
+def selected_endpoint_rectangles(
+    start: Point2,
+    end: Point2,
+    width: float,
+    inset: float,
+    overhang: float,
+    selection: NotchSide,
+) -> tuple[EndpointRectangle, ...]:
+    start_rectangle, end_rectangle = endpoint_rectangles(start, end, width, inset, overhang)
+    if (start.x, start.y) <= (end.x, end.y):
+        left, right = start_rectangle, end_rectangle
+    else:
+        left, right = end_rectangle, start_rectangle
+    rectangles = (
+        EndpointRectangle(NotchSide.LEFT, left),
+        EndpointRectangle(NotchSide.RIGHT, right),
+    )
+    if selection is NotchSide.BOTH:
+        return rectangles
+    return tuple(item for item in rectangles if item.side is selection)
