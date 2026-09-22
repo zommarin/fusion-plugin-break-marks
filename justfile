@@ -30,6 +30,7 @@ deploy:
         --include '/geometry.py' \
         --include '/service.py' \
         --include '/fusion_adapter.py' \
+        --include '/interactive_adapter.py' \
         --include '/BendMarks.py' \
         --include '/BendMarks.manifest' \
         --exclude '*' \

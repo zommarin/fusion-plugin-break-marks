@@ -24,6 +24,7 @@ def test_deploy_syncs_only_runtime_files_and_removes_stale_files(tmp_path: Path)
         "__init__.py",
         "fusion_adapter.py",
         "geometry.py",
+        "interactive_adapter.py",
         "service.py",
     }
 

@@ -6,7 +6,13 @@ from typing import Any, cast
 import adsk.fusion
 import pytest
 
-from BendMarks.fusion_adapter import FusionBackend, classify_bend_geometry, validate_parameter
+from BendMarks.fusion_adapter import (
+    FusionBackend,
+    add_constrained_rectangle,
+    classify_bend_geometry,
+    validate_parameter,
+)
+from BendMarks.geometry import Point2, Rectangle
 from BendMarks.service import BendMarksError, BuildResult, ExistingMarks
 
 
@@ -458,6 +464,40 @@ class FakeSketch:
         self.deleted = True
         self.log.append("delete sketch")
         return True
+
+
+def test_add_constrained_rectangle_preserves_geometry_and_constraints(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "BendMarks.fusion_adapter.adsk.core.Point3D.create",
+        lambda x, y, z: SimpleNamespace(x=x, y=y, z=z),
+    )
+    sketch = FakeSketch([])
+    centerline = cast(FakeSketchLine, sketch.projected_items[0])
+    rectangle = Rectangle((Point2(-1, -1), Point2(-1, 1), Point2(1, 1), Point2(1, -1)))
+
+    created = add_constrained_rectangle(
+        sketch, centerline, centerline.startSketchPoint, rectangle, "Bend 1"
+    )
+
+    assert created == tuple(sketch.sketchCurves.sketchLines.created)
+    assert len(created) == 6
+    assert [cast(Any, line).isConstruction for line in created] == [False] * 4 + [True] * 2
+    assert [call[0] for call in sketch.geometricConstraints.calls] == [
+        "parallel",
+        "parallel",
+        "perpendicular",
+        "perpendicular",
+        "midpoint",
+        "collinear",
+        "midpoint",
+    ]
+    assert [dimension.parameter.expression for dimension in sketch.sketchDimensions.created] == [
+        "bend_mark_overhang",
+        "bend_mark_inset",
+        "bend_mark_width",
+    ]
 
 
 class FakeSketches:

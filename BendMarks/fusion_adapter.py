@@ -71,6 +71,128 @@ def _is_sketch_line(entity: object) -> bool:
     return getattr(entity, "objectType", None) == line_type
 
 
+def _sketch_operation(context: str, operation: str, callback: Callable[[], object]) -> Any:
+    try:
+        entity = callback()
+    except Exception as error:
+        raise BendMarksError(f"{context}: {operation}") from error
+    if not entity:
+        raise BendMarksError(f"{context}: {operation}")
+    return cast(Any, entity)
+
+
+def _set_dimension_expression(dimension: Any, expression: str) -> bool:
+    dimension.parameter.expression = expression
+    return True
+
+
+def add_constrained_rectangle(
+    sketch: object,
+    centerline: object,
+    endpoint: object,
+    rectangle: Rectangle,
+    context: str,
+) -> tuple[object, object, object, object, object, object]:
+    dynamic_sketch = cast(Any, sketch)
+    dynamic_centerline = cast(Any, centerline)
+    dynamic_endpoint = cast(Any, endpoint)
+    lines = dynamic_sketch.sketchCurves.sketchLines
+    constraints = dynamic_sketch.geometricConstraints
+    dimensions = dynamic_sketch.sketchDimensions
+    corners = tuple(_point3d(corner) for corner in rectangle.corners)
+    first_line = _sketch_operation(
+        context,
+        "could not create rectangle edge",
+        lambda: lines.addByTwoPoints(corners[0], corners[1]),
+    )
+    second_line = _sketch_operation(
+        context,
+        "could not create rectangle edge",
+        lambda: lines.addByTwoPoints(first_line.endSketchPoint, corners[2]),
+    )
+    third_line = _sketch_operation(
+        context,
+        "could not create rectangle edge",
+        lambda: lines.addByTwoPoints(second_line.endSketchPoint, corners[3]),
+    )
+    fourth_line = _sketch_operation(
+        context,
+        "could not create rectangle edge",
+        lambda: lines.addByTwoPoints(third_line.endSketchPoint, first_line.startSketchPoint),
+    )
+    rectangle_lines = (first_line, second_line, third_line, fourth_line)
+
+    for line in (rectangle_lines[1], rectangle_lines[3]):
+        _sketch_operation(
+            context,
+            "could not add parallel constraint",
+            lambda line=line: constraints.addParallel(line, dynamic_centerline),
+        )
+    for line in (rectangle_lines[0], rectangle_lines[2]):
+        _sketch_operation(
+            context,
+            "could not add perpendicular constraint",
+            lambda line=line: constraints.addPerpendicular(line, dynamic_centerline),
+        )
+
+    outer_line = _sketch_operation(
+        context,
+        "could not create outer construction line",
+        lambda: lines.addByTwoPoints(_point3d(rectangle.outer_midpoint), dynamic_endpoint),
+    )
+    inner_line = _sketch_operation(
+        context,
+        "could not create inner construction line",
+        lambda: lines.addByTwoPoints(dynamic_endpoint, _point3d(rectangle.inner_midpoint)),
+    )
+    outer_line.isConstruction = True
+    inner_line.isConstruction = True
+
+    _sketch_operation(
+        context,
+        "could not add midpoint constraint",
+        lambda: constraints.addMidPoint(outer_line.startSketchPoint, rectangle_lines[0]),
+    )
+    _sketch_operation(
+        context,
+        "could not add collinear constraint",
+        lambda: constraints.addCollinear(outer_line, dynamic_centerline),
+    )
+    _sketch_operation(
+        context,
+        "could not add midpoint constraint",
+        lambda: constraints.addMidPoint(inner_line.endSketchPoint, rectangle_lines[2]),
+    )
+
+    orientation = adsk.fusion.DimensionOrientations.AlignedDimensionOrientation
+    dimension_specs = (
+        (outer_line, "bend_mark_overhang", rectangle.outer_midpoint),
+        (inner_line, "bend_mark_inset", rectangle.inner_midpoint),
+        (rectangle_lines[0], "bend_mark_width", rectangle.corners[0]),
+    )
+    for line, expression, text_position in dimension_specs:
+        dimension = _sketch_operation(
+            context,
+            f"could not add {expression} dimension",
+            lambda line=line, text_position=text_position: dimensions.addDistanceDimension(
+                line.startSketchPoint,
+                line.endSketchPoint,
+                orientation,
+                _point3d(text_position),
+                True,
+            ),
+        )
+        _sketch_operation(
+            context,
+            f"could not set {expression} expression",
+            lambda dimension=dimension, expression=expression: _set_dimension_expression(
+                dimension, expression
+            ),
+        )
+
+    return (*rectangle_lines, outer_line, inner_line)
+
+
 class FusionBackend:
     def __init__(self, application: adsk.core.Application) -> None:
         self.application = application
@@ -159,21 +281,6 @@ class FusionBackend:
         }
 
     @staticmethod
-    def _bend_operation(bend_index: int, operation: str, callback: Callable[[], object]) -> Any:
-        try:
-            entity = callback()
-        except Exception as error:
-            raise BendMarksError(f"Bend {bend_index}: {operation}") from error
-        if not entity:
-            raise BendMarksError(f"Bend {bend_index}: {operation}")
-        return cast(Any, entity)
-
-    @staticmethod
-    def _set_dimension_expression(dimension: Any, expression: str) -> bool:
-        dimension.parameter.expression = expression
-        return True
-
-    @staticmethod
     def _project_line(sketch: Any, edge: object, bend_index: int) -> Any:
         message = f"Bend {bend_index}: could not project centerline"
         try:
@@ -184,108 +291,6 @@ class FusionBackend:
         if len(projected) != 1 or not _is_sketch_line(projected[0]):
             raise BendMarksError(message)
         return cast(Any, projected[0])
-
-    def _add_rectangle(
-        self,
-        sketch: Any,
-        projected_line: Any,
-        projected_endpoint: Any,
-        rectangle: Rectangle,
-        bend_index: int,
-    ) -> None:
-        lines = sketch.sketchCurves.sketchLines
-        constraints = sketch.geometricConstraints
-        dimensions = sketch.sketchDimensions
-        corners = tuple(_point3d(corner) for corner in rectangle.corners)
-        first_line = self._bend_operation(
-            bend_index,
-            "could not create rectangle edge",
-            lambda: lines.addByTwoPoints(corners[0], corners[1]),
-        )
-        second_line = self._bend_operation(
-            bend_index,
-            "could not create rectangle edge",
-            lambda: lines.addByTwoPoints(first_line.endSketchPoint, corners[2]),
-        )
-        third_line = self._bend_operation(
-            bend_index,
-            "could not create rectangle edge",
-            lambda: lines.addByTwoPoints(second_line.endSketchPoint, corners[3]),
-        )
-        fourth_line = self._bend_operation(
-            bend_index,
-            "could not create rectangle edge",
-            lambda: lines.addByTwoPoints(third_line.endSketchPoint, first_line.startSketchPoint),
-        )
-        rectangle_lines = (first_line, second_line, third_line, fourth_line)
-
-        for line in (rectangle_lines[1], rectangle_lines[3]):
-            self._bend_operation(
-                bend_index,
-                "could not add parallel constraint",
-                lambda line=line: constraints.addParallel(line, projected_line),
-            )
-        for line in (rectangle_lines[0], rectangle_lines[2]):
-            self._bend_operation(
-                bend_index,
-                "could not add perpendicular constraint",
-                lambda line=line: constraints.addPerpendicular(line, projected_line),
-            )
-
-        outer_line = self._bend_operation(
-            bend_index,
-            "could not create outer construction line",
-            lambda: lines.addByTwoPoints(_point3d(rectangle.outer_midpoint), projected_endpoint),
-        )
-        inner_line = self._bend_operation(
-            bend_index,
-            "could not create inner construction line",
-            lambda: lines.addByTwoPoints(projected_endpoint, _point3d(rectangle.inner_midpoint)),
-        )
-        outer_line.isConstruction = True
-        inner_line.isConstruction = True
-
-        self._bend_operation(
-            bend_index,
-            "could not add midpoint constraint",
-            lambda: constraints.addMidPoint(outer_line.startSketchPoint, rectangle_lines[0]),
-        )
-        self._bend_operation(
-            bend_index,
-            "could not add collinear constraint",
-            lambda: constraints.addCollinear(outer_line, projected_line),
-        )
-        self._bend_operation(
-            bend_index,
-            "could not add midpoint constraint",
-            lambda: constraints.addMidPoint(inner_line.endSketchPoint, rectangle_lines[2]),
-        )
-
-        orientation = adsk.fusion.DimensionOrientations.AlignedDimensionOrientation
-        dimension_specs = (
-            (outer_line, "bend_mark_overhang", rectangle.outer_midpoint),
-            (inner_line, "bend_mark_inset", rectangle.inner_midpoint),
-            (rectangle_lines[0], "bend_mark_width", rectangle.corners[0]),
-        )
-        for line, expression, text_position in dimension_specs:
-            dimension = self._bend_operation(
-                bend_index,
-                f"could not add {expression} dimension",
-                lambda line=line, text_position=text_position: dimensions.addDistanceDimension(
-                    line.startSketchPoint,
-                    line.endSketchPoint,
-                    orientation,
-                    _point3d(text_position),
-                    True,
-                ),
-            )
-            self._bend_operation(
-                bend_index,
-                f"could not set {expression} expression",
-                lambda dimension=dimension, expression=expression: self._set_dimension_expression(
-                    dimension, expression
-                ),
-            )
 
     def _create_sketch(self) -> object:
         sketch: Any = None
@@ -319,8 +324,12 @@ class FusionBackend:
                     raise BendMarksError(
                         f"Bend {bend_index}: could not calculate endpoint rectangles"
                     ) from error
-                self._add_rectangle(sketch, projected_line, start_point, rectangles[0], bend_index)
-                self._add_rectangle(sketch, projected_line, end_point, rectangles[1], bend_index)
+                add_constrained_rectangle(
+                    sketch, projected_line, start_point, rectangles[0], f"Bend {bend_index}"
+                )
+                add_constrained_rectangle(
+                    sketch, projected_line, end_point, rectangles[1], f"Bend {bend_index}"
+                )
             return sketch
         except Exception as error:
             if sketch is not None:
