@@ -196,9 +196,7 @@ def untagged_edge() -> object:
 def fake_profile(edges: list[object], *, extra_loop: bool = False) -> object:
     loops: list[object] = [
         SimpleNamespace(
-            profileCurves=FakeCollection(
-                [SimpleNamespace(sketchEntity=edge) for edge in edges]
-            )
+            profileCurves=FakeCollection([SimpleNamespace(sketchEntity=edge) for edge in edges])
         )
     ]
     if extra_loop:
@@ -216,9 +214,7 @@ def prepared_cut_backend(
     root_component = root_component or object()
     sketch = FakeSketch(root_component, profiles)
     sketch.attributes.values[SKETCH_ID_ATTRIBUTE] = sketch_id
-    application = flat_pattern_application(
-        root_component=root_component, active_edit_object=sketch
-    )
+    application = flat_pattern_application(root_component=root_component, active_edit_object=sketch)
     cut_attributes: list[object] = [
         SimpleNamespace(
             parent=cut,
@@ -226,8 +222,8 @@ def prepared_cut_backend(
         )
         for cut in cuts or []
     ]
-    cast(Any, application).activeProduct.findAttributes = (
-        lambda group, name: FakeCollection(cut_attributes)
+    cast(Any, application).activeProduct.findAttributes = lambda group, name: (
+        FakeCollection(cut_attributes)
         if group == ATTRIBUTE_GROUP and name == INTERACTIVE_CUT_ATTRIBUTE
         else FakeCollection()
     )
@@ -248,9 +244,7 @@ class FakeCut:
         delete_result: bool | Exception = True,
     ) -> None:
         values = (
-            {INTERACTIVE_CUT_ATTRIBUTE: attribute_value}
-            if attribute_value is not None
-            else None
+            {INTERACTIVE_CUT_ATTRIBUTE: attribute_value} if attribute_value is not None else None
         )
         self.attributes = FakeAttributes(values, attribute_result)
         self.isValid = valid
@@ -411,9 +405,7 @@ def test_profile_discovery_accepts_only_fully_tagged_boundaries() -> None:
 
 
 def test_profile_discovery_rejects_tagged_profile_with_multiple_loops() -> None:
-    tagged_multiple_loops = fake_profile(
-        [generated_edge() for _ in range(4)], extra_loop=True
-    )
+    tagged_multiple_loops = fake_profile([generated_edge() for _ in range(4)], extra_loop=True)
     backend = prepared_cut_backend(profiles=[tagged_multiple_loops])
 
     with pytest.raises(BendMarksError, match="exactly one loop"):
@@ -490,9 +482,7 @@ def test_build_cuts_discovered_profiles_through_all(monkeypatch: pytest.MonkeyPa
 
 
 def test_build_rejects_profile_collection_add_failure(monkeypatch: pytest.MonkeyPatch) -> None:
-    backend, _ = prepared_cut_backend_with_extrudes(
-        monkeypatch, collection_add_result=False
-    )
+    backend, _ = prepared_cut_backend_with_extrudes(monkeypatch, collection_add_result=False)
 
     with pytest.raises(BendMarksError, match="Could not collect generated notch profile"):
         backend.build()
