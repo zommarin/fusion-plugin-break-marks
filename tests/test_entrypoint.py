@@ -10,9 +10,18 @@ from BendMarks.service import BendMarksError, BuildResult
 
 
 class FakeEvent:
-    def __init__(self, add_result: bool = True) -> None:
+    def __init__(
+        self,
+        add_result: bool = True,
+        *,
+        remove_result: bool = True,
+        remove_error: Exception | None = None,
+    ) -> None:
         self.handlers: list[object] = []
         self.add_result = add_result
+        self.remove_result = remove_result
+        self.remove_error = remove_error
+        self.remove_calls = 0
 
     def add(self, handler: object) -> bool:
         if self.add_result:
@@ -20,7 +29,10 @@ class FakeEvent:
         return self.add_result
 
     def remove(self, handler: object) -> bool:
-        if handler not in self.handlers:
+        self.remove_calls += 1
+        if self.remove_error is not None:
+            raise self.remove_error
+        if not self.remove_result or handler not in self.handlers:
             return False
         self.handlers.remove(handler)
         return True
@@ -321,6 +333,50 @@ def test_rejected_execute_handler_cleans_registration(monkeypatch: Any) -> None:
         f"delete:{BendMarks.COMMAND_ID}",
     ]
     assert "Could not register execute handler" in ui.messages[0]
+    assert BendMarks._handlers == []
+
+
+@pytest.mark.parametrize(
+    ("remove_result", "remove_error", "secondary_diagnostic"),
+    [
+        (False, None, "Execute-handler rollback failed: remove returned false"),
+        (True, RuntimeError("remove exploded"), "Execute-handler rollback failed: remove exploded"),
+    ],
+)
+def test_destroy_handler_rejection_preserves_error_when_execute_rollback_fails(
+    monkeypatch: Any,
+    remove_result: bool,
+    remove_error: Exception | None,
+    secondary_diagnostic: str,
+) -> None:
+    ui = FakeUI()
+    application = _application(ui)
+    monkeypatch.setattr(BendMarks.adsk.core.Application, "get", lambda: application)
+    BendMarks._handlers.clear()
+    BendMarks.run(object())
+    definition = ui.commandDefinitions.itemById(BendMarks.COMMAND_ID)
+    assert isinstance(definition, FakeDefinition)
+    created_handler: Any = definition.commandCreated.handlers[0]
+    execute_event = FakeEvent(
+        remove_result=remove_result,
+        remove_error=remove_error,
+    )
+    command = SimpleNamespace(
+        isAutoExecute=False,
+        execute=execute_event,
+        destroy=FakeEvent(add_result=False),
+    )
+
+    created_handler.notify(SimpleNamespace(command=command))
+
+    assert execute_event.remove_calls == 1
+    assert "Could not register command-destroy handler" in ui.messages[0]
+    assert secondary_diagnostic in ui.messages[0]
+    assert ui.events == [
+        f"delete:{BendMarks.COMMAND_ID}",
+        f"delete:{BendMarks.PANEL_ID}",
+        f"delete:{BendMarks.COMMAND_ID}",
+    ]
     assert BendMarks._handlers == []
 
 

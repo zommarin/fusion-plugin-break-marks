@@ -124,8 +124,17 @@ class _CommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
                 raise RuntimeError("Could not register execute handler")
             destroy_handler = _CommandDestroyHandler(execute_handler)
             if not command.destroy.add(destroy_handler):
-                command.execute.remove(execute_handler)
-                raise RuntimeError("Could not register command-destroy handler")
+                registration_error = RuntimeError("Could not register command-destroy handler")
+                try:
+                    if not command.execute.remove(execute_handler):
+                        registration_error.add_note(
+                            "Execute-handler rollback failed: remove returned false"
+                        )
+                except Exception as rollback_error:
+                    registration_error.add_note(
+                        f"Execute-handler rollback failed: {rollback_error}"
+                    )
+                raise registration_error
             _handlers.extend((execute_handler, destroy_handler))
         except Exception:
             ui = cast(Any, self.application).userInterface
