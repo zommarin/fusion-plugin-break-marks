@@ -22,12 +22,14 @@ class FakeBackend:
     fail_delete_parameters: bool = False
     calls: list[str] = field(default_factory=list)
     created_parameters: tuple[object, ...] = ()
+    expressions: dict[str, str] | None = None
 
     def prepare(self) -> None:
         self.calls.append("prepare")
 
-    def ensure_parameters(self) -> tuple[object, ...]:
+    def ensure_parameters(self, expressions: dict[str, str] | None = None) -> tuple[object, ...]:
         self.calls.append("ensure_parameters")
+        self.expressions = expressions
         return self.created_parameters
 
     def find_existing_marks(self) -> ExistingMarks:
@@ -70,6 +72,19 @@ def test_first_build_returns_counts_without_suppression() -> None:
         "build",
         "delete_existing",
     ]
+
+
+def test_rebuild_applies_submitted_parameter_expressions() -> None:
+    backend = FakeBackend()
+    expressions = {
+        "bend_mark_width": "stock_thickness * 2",
+        "bend_mark_inset": "2.5 mm",
+        "bend_mark_overhang": "bend_mark_inset / 2",
+    }
+
+    rebuild_bend_marks(backend, expressions)
+
+    assert backend.expressions == expressions
 
 
 def test_rebuild_suppresses_old_cut_before_build_and_deletes_after() -> None:

@@ -3,7 +3,7 @@ from typing import Any, cast
 
 import adsk.core
 
-from .fusion_adapter import FusionBackend
+from .fusion_adapter import PARAMETERS, FusionBackend
 from .service import BendMarksError, BuildResult, rebuild_bend_marks
 
 COMMAND_ID = "zommarin_fusion_break_marks_create"
@@ -12,6 +12,11 @@ TAB_ID = "FlatPatternSolidTab"
 PANEL_ID = "SolidCreatePanel"
 
 _COMMAND_DESCRIPTION = "Create rectangular alignment cuts at every flat-pattern bend endpoint"
+_INPUT_LABELS = {
+    "bend_mark_width": "Width",
+    "bend_mark_inset": "Inset",
+    "bend_mark_overhang": "Overhang",
+}
 _handlers: list[object] = []
 
 
@@ -24,6 +29,16 @@ def _success_message(result: BuildResult) -> str:
     if result.skipped_bends:
         message += f"\nSkipped {result.skipped_bends} unsupported curved bends."
     return message
+
+
+def _parameter_expressions(application: object) -> dict[str, str]:
+    product = getattr(application, "activeProduct", None)
+    user_parameters = getattr(product, "userParameters", None)
+    expressions: dict[str, str] = {}
+    for name, default_expression, _comment in PARAMETERS:
+        parameter = user_parameters.itemByName(name) if user_parameters is not None else None
+        expressions[name] = getattr(parameter, "expression", None) or default_expression
+    return expressions
 
 
 def _cleanup_ui(ui: object) -> None:
@@ -76,14 +91,25 @@ def _report_startup_failure(ui: object, failure: str) -> None:
 
 
 class _ExecuteHandler(adsk.core.CommandEventHandler):
-    def __init__(self, application: object) -> None:
+    def __init__(
+        self, application: object, parameter_inputs: dict[str, object] | None = None
+    ) -> None:
         super().__init__()
         self.application = application
+        self.parameter_inputs = parameter_inputs or {}
 
     def notify(self, eventArgs: adsk.core.CommandEventArgs) -> None:  # noqa: N803
         ui = cast(Any, self.application).userInterface
         try:
-            result = rebuild_bend_marks(FusionBackend(cast(Any, self.application)))
+            backend = FusionBackend(cast(Any, self.application))
+            if self.parameter_inputs:
+                expressions = {
+                    name: cast(Any, command_input).expression
+                    for name, command_input in self.parameter_inputs.items()
+                }
+                result = rebuild_bend_marks(backend, expressions)
+            else:
+                result = rebuild_bend_marks(backend)
         except BendMarksError as error:
             eventArgs.executeFailed = True
             _show_message(ui, str(error))
@@ -113,9 +139,21 @@ class _CommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
 
     def notify(self, eventArgs: adsk.core.CommandCreatedEventArgs) -> None:  # noqa: N803
         command = cast(Any, eventArgs).command
-        command.isAutoExecute = True
+        command.isAutoExecute = False
         try:
-            execute_handler = _ExecuteHandler(self.application)
+            expressions = _parameter_expressions(self.application)
+            parameter_inputs: dict[str, object] = {}
+            for name, _default_expression, _comment in PARAMETERS:
+                command_input = command.commandInputs.addValueInput(
+                    name,
+                    _INPUT_LABELS[name],
+                    "mm",
+                    adsk.core.ValueInput.createByString(expressions[name]),
+                )
+                if command_input is None:
+                    raise RuntimeError(f"Could not create {_INPUT_LABELS[name]} input")
+                parameter_inputs[name] = command_input
+            execute_handler = _ExecuteHandler(self.application, parameter_inputs)
             if not command.execute.add(execute_handler):
                 raise RuntimeError("Could not register execute handler")
             destroy_handler = _CommandDestroyHandler(execute_handler)

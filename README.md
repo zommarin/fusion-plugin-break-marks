@@ -27,7 +27,9 @@ start it again after updating the add-in files. You may also enable startup load
 
 1. Open an existing sheet-metal design and activate its flat pattern.
 2. On the **FLAT PATTERN SOLID** tab, open the **Create** panel and run **Create Bend Marks**.
-3. Review the result message. Each supported straight bend produces two marks; unsupported curved
+3. Enter the mark width, inset, and overhang in the command dialog, then select **OK**. Each field
+   accepts Fusion length expressions, including references to other user parameters.
+4. Review the result message. Each supported straight bend produces two marks; unsupported curved
    bends are skipped and counted.
 
 The command requires an active flat pattern. It creates one tagged `Bend Marks` sketch and one
@@ -38,7 +40,8 @@ marks. The add-in never treats replacement geometry as committed after cleanup f
 
 ### Parameters
 
-The first run creates these user parameters if they do not exist:
+The command dialog shows these values, prefilled from existing user-parameter expressions when
+available. The first run creates any missing parameters:
 
 | Parameter | Default | Controls |
 | --- | --- | --- |
@@ -46,9 +49,10 @@ The first run creates these user parameters if they do not exist:
 | `bend_mark_inset` | `1 mm` | Distance extending inward from the bend endpoint |
 | `bend_mark_overhang` | `1 mm` | Distance extending beyond the bend endpoint |
 
-All three parameters must be finite, positive lengths. Existing valid parameters are reused rather
-than reset. Edit them in Fusion's Parameters dialog and compute the design; constrained mark
-geometry updates without rerunning the command.
+All three expressions must resolve to finite, positive lengths. Selecting **OK** creates or updates
+the corresponding user parameters; selecting **Cancel** changes nothing. You can also edit them in
+Fusion's Parameters dialog and compute the design; constrained mark geometry updates without
+rerunning the command.
 
 ## Limitations
 

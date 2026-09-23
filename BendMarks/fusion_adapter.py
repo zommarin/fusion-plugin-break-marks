@@ -103,16 +103,23 @@ class FusionBackend:
         self.straight_edges = straight_edges
         self.skipped_bend_count = len(edges) - len(straight_edges)
 
-    def ensure_parameters(self) -> tuple[object, ...]:
+    def ensure_parameters(self, expressions: dict[str, str] | None = None) -> tuple[object, ...]:
         user_parameters = cast(Any, self.product).userParameters
         created: list[object] = []
         try:
             for name, default_expression, comment in PARAMETERS:
+                expression = (
+                    expressions.get(name, default_expression)
+                    if expressions is not None
+                    else default_expression
+                )
                 parameter = user_parameters.itemByName(name)
                 if parameter is not None:
+                    if expressions is not None:
+                        parameter.expression = expression
                     validate_parameter(name, parameter)
                     continue
-                value = adsk.core.ValueInput.createByString(default_expression)
+                value = adsk.core.ValueInput.createByString(expression)
                 parameter = user_parameters.add(name, value, "mm", comment)
                 if parameter is None:
                     raise BendMarksError(f"Could not create {name}")

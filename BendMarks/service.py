@@ -31,7 +31,9 @@ class BuildArtifacts:
 class BendMarksBackend(Protocol):
     def prepare(self) -> None: ...
 
-    def ensure_parameters(self) -> tuple[object, ...]: ...
+    def ensure_parameters(
+        self, expressions: dict[str, str] | None = None
+    ) -> tuple[object, ...]: ...
 
     def find_existing_marks(self) -> ExistingMarks: ...
 
@@ -44,9 +46,11 @@ class BendMarksBackend(Protocol):
     def delete_parameters(self, parameters: tuple[object, ...]) -> None: ...
 
 
-def rebuild_bend_marks(backend: BendMarksBackend) -> BuildResult:
+def rebuild_bend_marks(
+    backend: BendMarksBackend, expressions: dict[str, str] | None = None
+) -> BuildResult:
     backend.prepare()
-    created_parameters = backend.ensure_parameters()
+    created_parameters = backend.ensure_parameters(expressions)
     existing = ExistingMarks()
     cut_to_restore: object | None = None
     try:

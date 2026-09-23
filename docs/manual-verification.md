@@ -17,15 +17,18 @@ Prepare a sheet-metal fixture containing:
 - [ ] 1. Close the flat pattern and inspect the folded model. Confirm it has no generated bend
   marks or cutouts.
 - [ ] 2. Open the existing flat pattern. Confirm it is the active flat pattern, then run **Create
-  Bend Marks** from the **FLAT PATTERN SOLID** tab's **Create** panel.
+  Bend Marks** from the **FLAT PATTERN SOLID** tab's **Create** panel. Confirm a dialog shows width
+  `1.8 mm`, inset `1 mm`, and overhang `1 mm`, then select **OK**.
 - [ ] 3. Confirm two marks exist for each straight bend. If the fixture has curved bends, confirm
   they produce no marks and the completion message reports the curved skip count.
 - [ ] 4. Measure the generated marks. Confirm width is `1.8 mm`, inset is `1 mm`, and overhang is
   `1 mm`.
-- [ ] 5. Change `bend_mark_width`, `bend_mark_inset`, and `bend_mark_overhang` to distinct positive
-  lengths, then compute all. Confirm existing marks update without a command rerun.
+- [ ] 5. Create a positive length user parameter and rerun **Create Bend Marks**. Enter an
+  expression referencing it for width and formulas for inset and overhang. Confirm the dialog
+  accepts them and generated marks use their resolved values.
 - [ ] 6. **Rerun** **Create Bend Marks**. Confirm exactly one tagged `Bend Marks` sketch and one
-  tagged `Bend Marks Cut` remain, with no duplicate marks.
+  tagged `Bend Marks Cut` remain, with no duplicate marks. Confirm the dialog retains the current
+  parameter expressions. Cancel once and confirm marks and parameters remain unchanged.
 - [ ] 7. Use **Undo** once. Confirm the complete rerun reverses as one user action and restores the
   pre-rerun marks.
 - [ ] 8. Temporarily set one bend-mark parameter to zero and run the command. Confirm the command

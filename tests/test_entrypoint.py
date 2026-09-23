@@ -39,6 +39,18 @@ class FakeEvent:
         return True
 
 
+class FakeCommandInputs:
+    def __init__(self, null_on: str | None = None) -> None:
+        self.added: list[tuple[str, str, str, object]] = []
+        self.null_on = null_on
+
+    def addValueInput(self, input_id: str, name: str, unit: str, value: object) -> SimpleNamespace:
+        self.added.append((input_id, name, unit, value))
+        if input_id == self.null_on:
+            return cast(Any, None)
+        return SimpleNamespace(expression=getattr(value, "expression", ""))
+
+
 class FakeEntity:
     def __init__(
         self,
@@ -219,10 +231,15 @@ def test_success_message_includes_skipped_line_only_when_nonzero(
     assert BendMarks._success_message(BuildResult(3, 6, skipped)) == expected
 
 
-def test_run_registers_command_and_retains_created_and_execute_handlers(monkeypatch: Any) -> None:
+def test_run_registers_dialog_inputs_and_retains_handlers(monkeypatch: Any) -> None:
     ui = FakeUI()
     application = _application(ui)
     monkeypatch.setattr(BendMarks.adsk.core.Application, "get", lambda: application)
+    monkeypatch.setattr(
+        BendMarks.adsk.core.ValueInput,
+        "createByString",
+        lambda expression: SimpleNamespace(expression=expression),
+    )
     BendMarks._handlers.clear()
 
     BendMarks.run(object())
@@ -231,7 +248,13 @@ def test_run_registers_command_and_retains_created_and_execute_handlers(monkeypa
     created_handler: Any = definition.commandCreated.handlers[0]
     execute_event = FakeEvent()
     destroy_event = FakeEvent()
-    command = SimpleNamespace(isAutoExecute=False, execute=execute_event, destroy=destroy_event)
+    command_inputs = FakeCommandInputs()
+    command = SimpleNamespace(
+        isAutoExecute=True,
+        commandInputs=command_inputs,
+        execute=execute_event,
+        destroy=destroy_event,
+    )
     created_handler.notify(SimpleNamespace(command=command))
 
     assert ui.commandDefinitions.added_args == (
@@ -240,7 +263,17 @@ def test_run_registers_command_and_retains_created_and_execute_handlers(monkeypa
         "Create rectangular alignment cuts at every flat-pattern bend endpoint",
         "",
     )
-    assert command.isAutoExecute is True
+    assert command.isAutoExecute is False
+    assert [item[:3] for item in command_inputs.added] == [
+        ("bend_mark_width", "Width", "mm"),
+        ("bend_mark_inset", "Inset", "mm"),
+        ("bend_mark_overhang", "Overhang", "mm"),
+    ]
+    assert [cast(Any, item[3]).expression for item in command_inputs.added] == [
+        "1.8 mm",
+        "1 mm",
+        "1 mm",
+    ]
     assert BendMarks._handlers == [
         created_handler,
         execute_event.handlers[0],
@@ -264,6 +297,67 @@ def test_run_registers_command_in_flat_pattern_create_panel(monkeypatch: Any) ->
     sheet_metal_panel = cast(Any, ui.sheet_metal_panels.itemById("SolidCreatePanel"))
     assert flat_panel.controls.itemById(BendMarks.COMMAND_ID) is not None
     assert sheet_metal_panel.controls.itemById(BendMarks.COMMAND_ID) is None
+
+
+def test_command_dialog_prefills_existing_parameter_expressions(monkeypatch: Any) -> None:
+    ui = FakeUI()
+    parameters = {
+        "bend_mark_width": SimpleNamespace(expression="stock_thickness * 2"),
+        "bend_mark_inset": SimpleNamespace(expression="2.5 mm"),
+        "bend_mark_overhang": SimpleNamespace(expression="bend_mark_inset / 2"),
+    }
+    application = SimpleNamespace(
+        userInterface=ui,
+        activeProduct=SimpleNamespace(
+            userParameters=SimpleNamespace(itemByName=lambda name: parameters.get(name))
+        ),
+    )
+    monkeypatch.setattr(
+        BendMarks.adsk.core.ValueInput,
+        "createByString",
+        lambda expression: SimpleNamespace(expression=expression),
+    )
+    command_inputs = FakeCommandInputs()
+    command = SimpleNamespace(
+        isAutoExecute=True,
+        commandInputs=command_inputs,
+        execute=FakeEvent(),
+        destroy=FakeEvent(),
+    )
+
+    BendMarks._CommandCreatedHandler(application).notify(
+        cast(Any, SimpleNamespace(command=command))
+    )
+
+    assert [cast(Any, item[3]).expression for item in command_inputs.added] == [
+        "stock_thickness * 2",
+        "2.5 mm",
+        "bend_mark_inset / 2",
+    ]
+
+
+def test_null_command_input_aborts_dialog_creation(monkeypatch: Any) -> None:
+    ui = FakeUI()
+    application = _application(ui)
+    monkeypatch.setattr(
+        BendMarks.adsk.core.ValueInput,
+        "createByString",
+        lambda expression: SimpleNamespace(expression=expression),
+    )
+    command = SimpleNamespace(
+        isAutoExecute=True,
+        commandInputs=FakeCommandInputs(null_on="bend_mark_inset"),
+        execute=FakeEvent(),
+        destroy=FakeEvent(),
+    )
+
+    BendMarks._CommandCreatedHandler(application).notify(
+        cast(Any, SimpleNamespace(command=command))
+    )
+
+    assert "Could not create Inset input" in ui.messages[0]
+    assert command.execute.handlers == []
+    assert command.destroy.handlers == []
 
 
 def test_run_removes_definition_and_reports_missing_flat_pattern_panel(monkeypatch: Any) -> None:
@@ -327,6 +421,7 @@ def test_rejected_execute_handler_cleans_registration(monkeypatch: Any) -> None:
     created_handler: Any = definition.commandCreated.handlers[0]
     command = SimpleNamespace(
         isAutoExecute=False,
+        commandInputs=FakeCommandInputs(),
         execute=FakeEvent(add_result=False),
         destroy=FakeEvent(),
     )
@@ -368,6 +463,7 @@ def test_destroy_handler_rejection_preserves_error_when_execute_rollback_fails(
     )
     command = SimpleNamespace(
         isAutoExecute=False,
+        commandInputs=FakeCommandInputs(),
         execute=execute_event,
         destroy=FakeEvent(add_result=False),
     )
@@ -397,6 +493,7 @@ def test_destroy_releases_handlers_between_command_invocations(monkeypatch: Any)
     for _ in range(2):
         command = SimpleNamespace(
             isAutoExecute=False,
+            commandInputs=FakeCommandInputs(),
             execute=FakeEvent(),
             destroy=FakeEvent(),
         )
@@ -420,6 +517,36 @@ def test_execute_reports_success(monkeypatch: Any) -> None:
     assert event_args.executeFailed is False
     assert ui.messages == [
         "Created 4 bend marks across 2 bends.\nSkipped 1 unsupported curved bends."
+    ]
+
+
+def test_execute_forwards_edited_parameter_expressions(monkeypatch: Any) -> None:
+    ui = FakeUI()
+    application = _application(ui)
+    received: list[dict[str, str]] = []
+
+    def rebuild(_backend: object, expressions: dict[str, str]) -> BuildResult:
+        received.append(expressions)
+        return BuildResult(1, 2, 0)
+
+    monkeypatch.setattr(BendMarks, "FusionBackend", lambda received: ("backend", received))
+    monkeypatch.setattr(BendMarks, "rebuild_bend_marks", rebuild)
+    inputs: dict[str, object] = {
+        "bend_mark_width": SimpleNamespace(expression="stock_thickness * 2"),
+        "bend_mark_inset": SimpleNamespace(expression="2.5 mm"),
+        "bend_mark_overhang": SimpleNamespace(expression="bend_mark_inset / 2"),
+    }
+
+    event_args = SimpleNamespace(executeFailed=False)
+    BendMarks._ExecuteHandler(application, inputs).notify(cast(Any, event_args))
+
+    assert event_args.executeFailed is False
+    assert received == [
+        {
+            "bend_mark_width": "stock_thickness * 2",
+            "bend_mark_inset": "2.5 mm",
+            "bend_mark_overhang": "bend_mark_inset / 2",
+        }
     ]
 
 

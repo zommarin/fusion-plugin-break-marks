@@ -22,6 +22,7 @@ class FakeArc3D:
 class FakeParameter:
     value: float
     unit: str = "mm"
+    expression: str = ""
 
 
 class FakeCollection:
@@ -174,6 +175,57 @@ def test_existing_positive_parameters_are_not_recreated() -> None:
 
     assert backend.ensure_parameters() == ()
     assert parameters.added == []
+
+
+def test_submitted_expressions_update_existing_parameters() -> None:
+    parameters = FakeUserParameters(
+        existing={
+            "bend_mark_width": FakeParameter(0.18),
+            "bend_mark_inset": FakeParameter(0.1),
+            "bend_mark_overhang": FakeParameter(0.1),
+        }
+    )
+    backend = make_backend(FakeProduct([FakeEdge(FakeLine3D())], userParameters=parameters))
+    backend.prepare()
+
+    created = backend.ensure_parameters(
+        {
+            "bend_mark_width": "stock_thickness * 2",
+            "bend_mark_inset": "2.5 mm",
+            "bend_mark_overhang": "bend_mark_inset / 2",
+        }
+    )
+
+    assert created == ()
+    assert [parameter.expression for parameter in parameters.existing.values()] == [
+        "stock_thickness * 2",
+        "2.5 mm",
+        "bend_mark_inset / 2",
+    ]
+
+
+def test_submitted_expressions_create_missing_parameters(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "BendMarks.fusion_adapter.adsk.core.ValueInput.createByString",
+        lambda expression: f"value:{expression}",
+    )
+    parameters = FakeUserParameters()
+    backend = make_backend(FakeProduct([FakeEdge(FakeLine3D())], userParameters=parameters))
+    backend.prepare()
+
+    backend.ensure_parameters(
+        {
+            "bend_mark_width": "stock_thickness * 2",
+            "bend_mark_inset": "2.5 mm",
+            "bend_mark_overhang": "bend_mark_inset / 2",
+        }
+    )
+
+    assert [item[1] for item in parameters.added] == [
+        "value:stock_thickness * 2",
+        "value:2.5 mm",
+        "value:bend_mark_inset / 2",
+    ]
 
 
 def test_missing_parameters_use_exact_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
